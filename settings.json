@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "read_files": true,
+    "write_files": true,
+    "execute_shell": false,
+    "network_access": false
+  },
+  "project_structure": {
+    "src": true,
+    "tests": true,
+    "docs": true
+  },
+  "default_branch": "main"
+}
