@@ -71,11 +71,10 @@ class MLXBackend:
 
     def allocate(self, n_qubits: int, dtype=np.complex64) -> MLXState:
         size = 2**n_qubits
-        real = mx.zeros(size, dtype=mx.float32)
+        real_np = np.zeros(size, dtype=np.float32)
+        real_np[0] = 1.0
+        real = mx.array(real_np)
         imag = mx.zeros(size, dtype=mx.float32)
-        # Set amplitude of |0...0⟩ to 1
-        ones = mx.ones(1, dtype=mx.float32)
-        real = mx.scatter(real, mx.array([0]), ones, 0)
         mx.eval(real, imag)
         return MLXState(real=real, imag=imag, n_qubits=n_qubits)
 
@@ -107,18 +106,18 @@ class MLXBackend:
         n = sv.n_qubits
         k = len(targets)
         diag = np.diag(matrix).astype(np.complex64)
+        diag_r = mx.array(diag.real.astype(np.float32))  # zero-copy
+        diag_i = mx.array(diag.imag.astype(np.float32))  # zero-copy
 
         size = 2**n
-        phase = np.ones(size, dtype=np.complex64)
-        for i in range(size):
-            gate_idx = 0
-            for bit_pos, q in enumerate(targets):
-                if (i >> (n - 1 - q)) & 1:
-                    gate_idx |= 1 << (k - 1 - bit_pos)
-            phase[i] = diag[gate_idx]
+        indices = mx.arange(size, dtype=mx.uint32)
+        gate_idx = mx.zeros(size, dtype=mx.uint32)
+        for bit_pos, q in enumerate(targets):
+            bit = (indices >> (n - 1 - q)) & mx.array(1, dtype=mx.uint32)
+            gate_idx = gate_idx | (bit << (k - 1 - bit_pos))
 
-        pr = mx.array(phase.real.astype(np.float32))
-        pi = mx.array(phase.imag.astype(np.float32))
+        pr = diag_r[gate_idx]
+        pi = diag_i[gate_idx]
 
         new_real = pr * sv.real - pi * sv.imag
         new_imag = pr * sv.imag + pi * sv.real
@@ -186,13 +185,11 @@ class MLXBackend:
         if _METAL_KERNEL is not None and k == 1 and not controls:
             return self._apply_metal_kernel_1q(sv, mat, targets)
 
-        # Materialise SoA to numpy for tensordot
-        mx.eval(sv.real, sv.imag)
-        real_np = np.array(sv.real, dtype=np.float32)
-        imag_np = np.array(sv.imag, dtype=np.float32)
-
         if controls:
             from macquerel.backends.cpu import CPUBackend
+            mx.eval(sv.real, sv.imag)
+            real_np = np.array(sv.real, dtype=np.float32)
+            imag_np = np.array(sv.imag, dtype=np.float32)
             sv_complex = (real_np + 1j * imag_np).astype(np.complex64)
             sv_complex = CPUBackend()._apply_controlled(sv_complex, mat, targets, controls)
             new_real = mx.array(sv_complex.real.astype(np.float32))
@@ -200,17 +197,19 @@ class MLXBackend:
             mx.eval(new_real, new_imag)
             return MLXState(real=new_real, imag=new_imag, n_qubits=n)
 
-        state_r = real_np.reshape((2,) * n)
-        state_i = imag_np.reshape((2,) * n)
+        # Use MLX tensordot to keep state on GPU — no numpy round-trip
+        mat_r = mx.array(mat.real.astype(np.float32)).reshape((2,) * (2 * k))
+        mat_i = mx.array(mat.imag.astype(np.float32)).reshape((2,) * (2 * k))
 
-        gate_r = mat.real.reshape((2,) * (2 * k))
-        gate_i = mat.imag.reshape((2,) * (2 * k))
+        state_r = sv.real.reshape((2,) * n)
+        state_i = sv.imag.reshape((2,) * n)
+
         input_axes = list(range(k, 2 * k))
 
-        out_rr = np.tensordot(gate_r, state_r, axes=(input_axes, targets))
-        out_ri = np.tensordot(gate_r, state_i, axes=(input_axes, targets))
-        out_ir = np.tensordot(gate_i, state_r, axes=(input_axes, targets))
-        out_ii = np.tensordot(gate_i, state_i, axes=(input_axes, targets))
+        out_rr = mx.tensordot(mat_r, state_r, axes=[input_axes, targets])
+        out_ri = mx.tensordot(mat_r, state_i, axes=[input_axes, targets])
+        out_ir = mx.tensordot(mat_i, state_r, axes=[input_axes, targets])
+        out_ii = mx.tensordot(mat_i, state_i, axes=[input_axes, targets])
 
         out_r = out_rr - out_ii
         out_i = out_ri + out_ir
@@ -220,13 +219,11 @@ class MLXBackend:
         inv_perm = [0] * n
         for new_pos, old_pos in enumerate(dest):
             inv_perm[old_pos] = new_pos
-        out_r = np.transpose(out_r, inv_perm).reshape(-1)
-        out_i = np.transpose(out_i, inv_perm).reshape(-1)
+        out_r = mx.transpose(out_r, inv_perm).reshape(-1)
+        out_i = mx.transpose(out_i, inv_perm).reshape(-1)
 
-        new_real = mx.array(out_r.astype(np.float32))
-        new_imag = mx.array(out_i.astype(np.float32))
-        mx.eval(new_real, new_imag)
-        return MLXState(real=new_real, imag=new_imag, n_qubits=n)
+        mx.eval(out_r, out_i)
+        return MLXState(real=out_r, imag=out_i, n_qubits=n)
 
     def measure(
         self,
