@@ -41,26 +41,44 @@ def test_empty_circuit():
 
 
 def test_multi_control_gate():
-    """CNOT with an extra control (Toffoli-like) on 5 qubits."""
+    """X gate with 3 controls on 5 qubits (Toffoli-like)."""
     cpu = CPUBackend()
     n = 5
     sv = cpu.allocate(n)
 
-    # Set all control qubits to |1⟩: apply X to qubits 0, 1, 2
+    # Set control qubits 0, 1, 2 to |1⟩
     sv = cpu.apply_matrix(sv, g.X(), [0])
     sv = cpu.apply_matrix(sv, g.X(), [1])
     sv = cpu.apply_matrix(sv, g.X(), [2])
 
-    # Now qubits 0,1,2 are all |1⟩. Apply X to qubit 3 controlled on qubit 2.
-    sv = cpu.apply_matrix(sv, g.X(), [3], [2])
+    # Apply X to qubit 3 controlled on qubits 0, 1, 2 (all three must be |1⟩)
+    sv = cpu.apply_matrix(sv, g.X(), [3], [0, 1, 2])
 
-    # qubit 3 should now be |1⟩ since control (qubit 2) was |1⟩
     sv_shaped = sv.reshape((2,) * n)
-    # marginal prob of qubit 3 being 1
     probs = np.abs(sv_shaped) ** 2
     sum_axes = tuple(i for i in range(n) if i != 3)
     p_qubit3 = np.sum(probs, axis=sum_axes)
     assert p_qubit3[1] > 0.99, f"qubit 3 not in |1⟩: prob={p_qubit3[1]}"
+
+
+def test_multi_control_gate_not_triggered():
+    """X with 3 controls should NOT fire when one control is |0⟩."""
+    cpu = CPUBackend()
+    n = 5
+    sv = cpu.allocate(n)
+
+    # Set only qubits 0 and 1 to |1⟩; qubit 2 stays |0⟩
+    sv = cpu.apply_matrix(sv, g.X(), [0])
+    sv = cpu.apply_matrix(sv, g.X(), [1])
+
+    # Controls are [0, 1, 2] but qubit 2 is |0⟩, so X on qubit 3 should not fire
+    sv = cpu.apply_matrix(sv, g.X(), [3], [0, 1, 2])
+
+    sv_shaped = sv.reshape((2,) * n)
+    probs = np.abs(sv_shaped) ** 2
+    sum_axes = tuple(i for i in range(n) if i != 3)
+    p_qubit3 = np.sum(probs, axis=sum_axes)
+    assert p_qubit3[0] > 0.99, f"qubit 3 should be in |0⟩: prob={p_qubit3[0]}"
 
 
 def test_circuit_n_qubits_one():
