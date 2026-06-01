@@ -1,5 +1,7 @@
 # macquerel
 
+<img src="logo.png" width="200" />
+
 A quantum state-vector simulator targeting Apple Silicon's unified-memory architecture.
 
 ## Features
