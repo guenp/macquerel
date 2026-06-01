@@ -92,6 +92,29 @@ uv run pytest
 
 MLX backend tests are automatically skipped when MLX is not installed.
 
+## Benchmarks
+
+Quick smoke run (completes in a few seconds):
+
+```bash
+uv run python tests/benchmarks/bench_backends.py --qubits 10 14 --reps 1
+```
+
+Full benchmarks (may take several minutes at 24+ qubits):
+
+```bash
+# CPU vs MLX backend — random circuits, various qubit counts
+uv run python tests/benchmarks/bench_backends.py
+
+# Single-gate throughput (GB/s)
+uv run python benchmarks/bench_single_gate.py
+
+# QFT, random, QAOA circuits + fusion-width sweep
+uv run python benchmarks/bench_circuits.py
+```
+
+All scripts print results live as each configuration completes. Pass `--json FILE` to save results for later comparison.
+
 ## Requirements
 
 - Python ≥ 3.11

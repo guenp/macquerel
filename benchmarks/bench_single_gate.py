@@ -59,6 +59,11 @@ def benchmark(qubit_counts: list[int], reps: int) -> list[dict]:
     except ImportError:
         backends = {"cpu": CPUBackend()}
 
+    bnames = list(backends.keys())
+    headers = ["qubits", "gate"] + [f"{b} (ms)" for b in bnames] + [f"{b} GB/s" for b in bnames]
+    print("  ".join(f"{h:>12}" for h in headers))
+    print("-" * (14 * len(headers)), flush=True)
+
     results = []
     for n in qubit_counts:
         for gate_name, gate_fn in _GATES.items():
@@ -67,23 +72,16 @@ def benchmark(qubit_counts: list[int], reps: int) -> list[dict]:
             targets = list(range(k))
             row = {"n_qubits": n, "gate": gate_name, "target_qubits": targets}
             for bname, backend in backends.items():
+                print(f"  running {n}q  {gate_name}  ({bname})...", end="\r", flush=True)
                 elapsed = _time_gate(backend, n, mat, targets, reps)
                 row[f"{bname}_ms"] = round(elapsed * 1000, 3)
                 row[f"{bname}_gbps"] = round(_gbps(n, k, elapsed), 3)
             results.append(row)
+            cols = [str(n), gate_name]
+            cols += [str(row.get(f"{b}_ms", "n/a")) for b in bnames]
+            cols += [str(row.get(f"{b}_gbps", "n/a")) for b in bnames]
+            print("  ".join(f"{v:>12}" for v in cols), flush=True)
     return results
-
-
-def _print_table(results: list[dict]) -> None:
-    bnames = [k.replace("_ms", "") for k in results[0] if k.endswith("_ms")]
-    headers = ["qubits", "gate"] + [f"{b} (ms)" for b in bnames] + [f"{b} GB/s" for b in bnames]
-    print("  ".join(f"{h:>12}" for h in headers))
-    print("-" * (14 * len(headers)))
-    for r in results:
-        row = [str(r["n_qubits"]), r["gate"]]
-        row += [str(r.get(f"{b}_ms", "n/a")) for b in bnames]
-        row += [str(r.get(f"{b}_gbps", "n/a")) for b in bnames]
-        print("  ".join(f"{v:>12}" for v in row))
 
 
 def main() -> None:
@@ -94,7 +92,6 @@ def main() -> None:
     args = parser.parse_args()
 
     results = benchmark(sorted(args.qubits), args.reps)
-    _print_table(results)
 
     if args.json:
         path = Path(args.json)

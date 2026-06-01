@@ -64,6 +64,28 @@ def _warmup(backend, n: int, ops: list[tuple]) -> None:
     _flush(backend, sv)
 
 
+def _print_header(has_mlx: bool) -> None:
+    if has_mlx:
+        print(f"\n{'qubits':>6}  {'depth':>5}  {'CPU (ms)':>10}  {'MLX (ms)':>10}  {'speedup':>9}")
+        print("-" * 48)
+    else:
+        print(f"\n{'qubits':>6}  {'depth':>5}  {'CPU (ms)':>10}")
+        print("-" * 26)
+
+
+def _print_row(r: dict, has_mlx: bool) -> None:
+    if has_mlx:
+        speedup = r["speedup"]
+        tag = ""
+        if speedup is not None:
+            tag = "  MLX faster" if speedup > 1.5 else ("  CPU faster" if speedup < 0.67 else "")
+        mlx_str = f"{r['mlx_ms']:>10.1f}" if r["mlx_ms"] is not None else f"{'n/a':>10}"
+        sp_str = f"{speedup:>8.2f}x" if speedup is not None else f"{'n/a':>9}"
+        print(f"{r['n_qubits']:>6}  {r['depth']:>5}  {r['cpu_ms']:>10.1f}  {mlx_str}  {sp_str}{tag}", flush=True)
+    else:
+        print(f"{r['n_qubits']:>6}  {r['depth']:>5}  {r['cpu_ms']:>10.1f}", flush=True)
+
+
 def benchmark(
     qubit_counts: list[int],
     depth: int,
@@ -82,53 +104,38 @@ def benchmark(
     rng = np.random.default_rng(seed)
     results = []
 
+    _print_header(has_mlx)
+
     for n in qubit_counts:
         ops = _random_ops(n, depth, rng)
 
+        print(f"  {n}q  warming up...                    ", end="\r", flush=True)
         _warmup(cpu, n, ops)
         if has_mlx:
             _warmup(mlx_backend, n, ops)
 
+        print(f"  {n}q  running cpu (depth={depth})...   ", end="\r", flush=True)
         cpu_times = [_run(cpu, n, ops) for _ in range(reps)]
+        if has_mlx:
+            print(f"  {n}q  running mlx (depth={depth})...   ", end="\r", flush=True)
         mlx_times = [_run(mlx_backend, n, ops) for _ in range(reps)] if has_mlx else []
 
         cpu_ms = min(cpu_times) * 1000
         mlx_ms = min(mlx_times) * 1000 if mlx_times else None
 
-        results.append({
+        row = {
             "n_qubits": n,
             "depth": depth,
             "reps": reps,
             "cpu_ms": round(cpu_ms, 3),
             "mlx_ms": round(mlx_ms, 3) if mlx_ms is not None else None,
             "speedup": round(cpu_ms / mlx_ms, 3) if mlx_ms else None,
-        })
+        }
+        results.append(row)
+        _print_row(row, has_mlx)
 
-    return results
-
-
-def _print_table(results: list[dict]) -> None:
-    has_mlx = any(r["mlx_ms"] is not None for r in results)
-    if has_mlx:
-        print(f"\n{'qubits':>6}  {'depth':>5}  {'CPU (ms)':>10}  {'MLX (ms)':>10}  {'speedup':>9}")
-        print("-" * 48)
-        for r in results:
-            speedup = r["speedup"]
-            tag = ""
-            if speedup is not None:
-                if speedup > 1.5:
-                    tag = "  MLX faster"
-                elif speedup < 0.67:
-                    tag = "  CPU faster"
-            mlx_str = f"{r['mlx_ms']:>10.1f}" if r["mlx_ms"] is not None else f"{'n/a':>10}"
-            sp_str = f"{speedup:>8.2f}x" if speedup is not None else f"{'n/a':>9}"
-            print(f"{r['n_qubits']:>6}  {r['depth']:>5}  {r['cpu_ms']:>10.1f}  {mlx_str}  {sp_str}{tag}")
-    else:
-        print(f"\n{'qubits':>6}  {'depth':>5}  {'CPU (ms)':>10}")
-        print("-" * 26)
-        for r in results:
-            print(f"{r['n_qubits']:>6}  {r['depth']:>5}  {r['cpu_ms']:>10.1f}")
     print()
+    return results
 
 
 def _ascii_chart(results: list[dict]) -> None:
@@ -189,7 +196,6 @@ def main() -> None:
         seed=args.seed,
     )
 
-    _print_table(results)
     if not args.no_chart:
         _ascii_chart(results)
 

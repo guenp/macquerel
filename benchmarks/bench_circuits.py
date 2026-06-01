@@ -92,7 +92,12 @@ def benchmark(qubit_counts: list[int], reps: int, depth: int) -> dict:
     except ImportError:
         backends = {"cpu": CPUBackend()}
 
+    bnames = list(backends.keys())
     results = {"circuit_benchmarks": [], "fusion_sweep": []}
+
+    print("\n=== Circuit benchmarks ===")
+    headers = ["n_qubits", "circuit"] + [f"{b} (ms)" for b in bnames]
+    print("  ".join(f"{h:>12}" for h in headers), flush=True)
 
     for n in qubit_counts:
         circuits = {
@@ -103,35 +108,30 @@ def benchmark(qubit_counts: list[int], reps: int, depth: int) -> dict:
         for circuit_name, circuit in circuits.items():
             row = {"n_qubits": n, "circuit": circuit_name}
             for bname, backend in backends.items():
+                print(f"  running {n}q  {circuit_name}  ({bname})...", end="\r", flush=True)
                 times = [_run_circuit(backend, circuit) for _ in range(reps)]
                 row[f"{bname}_ms"] = round(min(times) * 1000, 3)
             results["circuit_benchmarks"].append(row)
-
-        # Fusion-width sweep on QFT (CPU only — most representative for tuning)
-        qft = _build_qft(n)
-        for fw in range(1, 7):
-            times = [_run_circuit(CPUBackend(), qft, max_fused_qubits=fw) for _ in range(reps)]
-            results["fusion_sweep"].append({
-                "n_qubits": n, "circuit": "QFT",
-                "max_fused_qubits": fw, "cpu_ms": round(min(times) * 1000, 3),
-            })
-
-    return results
-
-
-def _print_results(results: dict) -> None:
-    print("\n=== Circuit benchmarks ===")
-    bnames = [k.replace("_ms", "") for k in results["circuit_benchmarks"][0] if k.endswith("_ms")]
-    headers = ["n_qubits", "circuit"] + [f"{b} (ms)" for b in bnames]
-    print("  ".join(f"{h:>12}" for h in headers))
-    for r in results["circuit_benchmarks"]:
-        row = [str(r["n_qubits"]), r["circuit"]] + [str(r.get(f"{b}_ms", "n/a")) for b in bnames]
-        print("  ".join(f"{v:>12}" for v in row))
+            cols = [str(n), circuit_name] + [str(row.get(f"{b}_ms", "n/a")) for b in bnames]
+            print("  ".join(f"{v:>12}" for v in cols), flush=True)
 
     print("\n=== Fusion-width sweep (QFT, CPU) ===")
-    print(f"{'n_qubits':>8}  {'fused_w':>7}  {'cpu_ms':>10}")
-    for r in results["fusion_sweep"]:
-        print(f"{r['n_qubits']:>8}  {r['max_fused_qubits']:>7}  {r['cpu_ms']:>10.1f}")
+    print(f"{'n_qubits':>8}  {'fused_w':>7}  {'cpu_ms':>10}", flush=True)
+
+    qft_backend = CPUBackend()
+    for n in qubit_counts:
+        qft = _build_qft(n)
+        for fw in range(1, 7):
+            print(f"  {n}q  QFT  fused_w={fw}...", end="\r", flush=True)
+            times = [_run_circuit(qft_backend, qft, max_fused_qubits=fw) for _ in range(reps)]
+            entry = {
+                "n_qubits": n, "circuit": "QFT",
+                "max_fused_qubits": fw, "cpu_ms": round(min(times) * 1000, 3),
+            }
+            results["fusion_sweep"].append(entry)
+            print(f"{n:>8}  {fw:>7}  {entry['cpu_ms']:>10.1f}", flush=True)
+
+    return results
 
 
 def main() -> None:
@@ -143,7 +143,6 @@ def main() -> None:
     args = parser.parse_args()
 
     results = benchmark(sorted(args.qubits), args.reps, args.depth)
-    _print_results(results)
 
     if args.json:
         path = Path(args.json)
