@@ -1,5 +1,1 @@
-add_library(macquerel SHARED
-    simulator.py
-)
-
-target_link_libraries(macquerel PRIVATE Python::Python)
+# C++ extension deferred to v0.2

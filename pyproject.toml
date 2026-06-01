@@ -5,9 +5,12 @@ description = "Quantum state-vector simulator for Apple Silicon"
 authors = [{name = "Guen Prawiroatmodjo", email = "4041805+guenp@users.noreply.github.com"}]
 requires-python = ">=3.11"
 dependencies = [
-    "mlx>=0.3.0",
+    "numpy>=1.24",
     "pytest>=7.4.0",
 ]
+
+[project.optional-dependencies]
+mlx = ["mlx>=0.3.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/macquerel"]

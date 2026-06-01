@@ -1,66 +1,88 @@
-from typing import Protocol, runtime_checkable
-import mlx.core as mx
+from __future__ import annotations
 
-@runtime_checkable
-class Backend(Protocol):
-    def allocate(self, n_qubits: int, dtype) -> mx.array: ...
-    def apply_matrix(self, sv: mx.array, matrix: mx.array, targets: list[int], controls: list[int] = None) -> None: ...
-    def measure(self, sv: mx.array, qubits: list[int], *, collapse: bool = True) -> list[int]: ...
-    def sample(self, sv: mx.array, qubits: list[int], shots: int) -> dict[int, int]: ...
-    def expectation_pauli(self, sv: mx.array, pauli_strings: list[str]) -> mx.array: ...
+from collections import Counter
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+from macquerel.circuit import Circuit, Gate, MeasureOp
+from macquerel.compiler import fuse_gates
+
+if TYPE_CHECKING:
+    from macquerel.backends.cpu import CPUBackend
 
 
-class Circuit:
-    def __init__(self, n_qubits: int):
-        self.n_qubits = n_qubits
-        self.gates = []
-
-    def h(self, qubit: int) -> None:
-        self.gates.append(('H', [qubit]))
-
-    def cx(self, control: int, target: int) -> None:
-        self.gates.append(('CNOT', [control, target]))
-
-    def rz(self, qubit: int, theta: float) -> None:
-        self.gates.append(('RZ', [qubit, theta]))
-
-    def measure_all(self) -> None:
-        self.gates.append(('MEASURE', []))
+def _make_backend(name: str, dtype: str):
+    if name == "cpu":
+        from macquerel.backends.cpu import CPUBackend
+        return CPUBackend()
+    if name == "mlx":
+        from macquerel.backends.mlx_backend import MLXBackend
+        return MLXBackend()
+    raise ValueError(f"Unknown backend: {name!r}. Choose 'cpu' or 'mlx'.")
 
 
 class Simulator:
-    def __init__(self, backend: str = 'mlx', dtype: str = 'complex64'):
-        self.backend = backend
+    def __init__(self, backend: str = "cpu", dtype: str = "complex64"):
+        self.backend_name = backend
         self.dtype = dtype
-        self.state = None
+        self._backend = _make_backend(backend, dtype)
+        self._np_dtype = np.complex64 if dtype == "complex64" else np.complex128
 
-    def run(self, circuit: Circuit, shots: int = 1000) -> dict[int, int]:
-        self.state = mx.random.normal((2**circuit.n_qubits,))
-        for gate in circuit.gates:
-            if gate[0] == 'H':
-                self._apply_hadamard(gate[1][0])
-            elif gate[0] == 'CNOT':
-                self._apply_cnot(gate[1][0], gate[1][1])
-            elif gate[0] == 'RZ':
-                self._apply_rz(gate[1][0], gate[1][1])
-        return self._sample(shots)
+    def statevector(self, circuit: Circuit) -> np.ndarray:
+        sv = self._backend.allocate(circuit.n_qubits, self._np_dtype)
+        fused = fuse_gates(circuit)
+        for op in fused.ops:
+            if isinstance(op, Gate):
+                sv = self._backend.apply_matrix(sv, op.matrix, op.targets, op.controls or None)
+            elif isinstance(op, MeasureOp):
+                self._backend.measure(sv, op.qubits, collapse=True)
+        return sv
 
-    def _apply_hadamard(self, qubit: int) -> None:
-        # Implementation details would go here
-        pass
+    def run(self, circuit: Circuit, shots: int = 1000) -> Counter:
+        fused = fuse_gates(circuit)
 
-    def _apply_cnot(self, control: int, target: int) -> None:
-        # Implementation details would go here
-        pass
+        # Split circuit at measurement boundaries:
+        # collect gate segments and the measurement qubit lists
+        segments: list[list[Gate]] = []
+        measurements: list[list[int]] = []
+        current_gates: list[Gate] = []
 
-    def _apply_rz(self, qubit: int, theta: float) -> None:
-        # Implementation details would go here
-        pass
+        for op in fused.ops:
+            if isinstance(op, Gate):
+                current_gates.append(op)
+            elif isinstance(op, MeasureOp):
+                segments.append(current_gates)
+                measurements.append(op.qubits)
+                current_gates = []
+        # trailing gates after last measure (no measurement)
+        if current_gates and not measurements:
+            # no measurements at all — sample from final state
+            sv = self._backend.allocate(circuit.n_qubits, self._np_dtype)
+            for gate in current_gates:
+                sv = self._backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
+            return self._backend.sample(sv, list(range(circuit.n_qubits)), shots)
 
-    def _sample(self, shots: int) -> dict[int, int]:
-        # Implementation details would go here
-        return {0: shots // 2, 1: shots // 2}
+        sv = self._backend.allocate(circuit.n_qubits, self._np_dtype)
+        outcome_bitstrings: list[Counter] = []
 
-    def statevector(self, circuit: Circuit) -> mx.array:
-        # Return the state vector
-        return self.state
+        for gates, meas_qubits in zip(segments, measurements):
+            for gate in gates:
+                sv = self._backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
+            counts = self._backend.sample(sv, meas_qubits, shots)
+            outcome_bitstrings.append(counts)
+
+        # apply trailing gates
+        for gate in current_gates:
+            sv = self._backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
+
+        # If only one measurement, return it directly
+        if len(outcome_bitstrings) == 1:
+            return outcome_bitstrings[0]
+
+        # Multiple measurement points: return combined bitstrings
+        result: Counter = Counter()
+        for c in outcome_bitstrings:
+            for k, v in c.items():
+                result[k] += v
+        return result
