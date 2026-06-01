@@ -31,9 +31,9 @@ def _apply_gates(backend, sv, gate_list):
 def _circuit_gates():
     return [
         # Bell
-        [(g.H(), [0]), (g.CNOT(), [1], [0])],
+        [(g.H(), [0]), (g.CNOT(), [0, 1])],
         # GHZ
-        [(g.H(), [0]), (g.CNOT(), [1], [0]), (g.CNOT(), [2], [0])],
+        [(g.H(), [0]), (g.CNOT(), [0, 1]), (g.CNOT(), [0, 2])],
         # diagonal gates
         [(g.H(), [0]), (g.Rz(0.5), [0]), (g.S(), [0]), (g.CZ(), [0, 1])],
         # mixed
@@ -43,7 +43,7 @@ def _circuit_gates():
 
 @pytest.mark.parametrize("gate_seq", _circuit_gates())
 def test_differential(cpu, mlx_backend, gate_seq):
-    n_qubits = max(q for item in gate_seq for q in item[1] + (item[2] if len(item) > 2 else [])) + 1
+    n_qubits = max(q for item in gate_seq for q in item[1]) + 1
     sv_cpu = _apply_gates(cpu, cpu.allocate(n_qubits), gate_seq)
     sv_mlx = _apply_gates(mlx_backend, mlx_backend.allocate(n_qubits), gate_seq)
 
@@ -54,7 +54,7 @@ def test_differential(cpu, mlx_backend, gate_seq):
 def test_bell_state(mlx_backend):
     sv = mlx_backend.allocate(2)
     sv = mlx_backend.apply_matrix(sv, g.H(), [0])
-    sv = mlx_backend.apply_matrix(sv, g.CNOT(), [1], [0])
+    sv = mlx_backend.apply_matrix(sv, g.CNOT(), [0, 1])
     expected = np.array([1 / np.sqrt(2), 0, 0, 1 / np.sqrt(2)], dtype=np.complex64)
     assert np.allclose(sv, expected, atol=1e-5)
 
@@ -62,8 +62,8 @@ def test_bell_state(mlx_backend):
 def test_ghz(mlx_backend):
     sv = mlx_backend.allocate(3)
     sv = mlx_backend.apply_matrix(sv, g.H(), [0])
-    sv = mlx_backend.apply_matrix(sv, g.CNOT(), [1], [0])
-    sv = mlx_backend.apply_matrix(sv, g.CNOT(), [2], [0])
+    sv = mlx_backend.apply_matrix(sv, g.CNOT(), [0, 1])
+    sv = mlx_backend.apply_matrix(sv, g.CNOT(), [0, 2])
     inv_sqrt2 = 1 / np.sqrt(2)
     assert abs(sv[0] - inv_sqrt2) < 1e-5
     assert abs(sv[7] - inv_sqrt2) < 1e-5
