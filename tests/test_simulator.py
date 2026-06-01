@@ -1,5 +1,5 @@
 import unittest
-from src.simulator import Simulator, Circuit
+from macquerel.simulator import Simulator, Circuit
 
 class TestSimulator(unittest.TestCase):
     def test_basic_simulation(self):
