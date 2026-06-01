@@ -56,13 +56,14 @@ class MLXBackend:
         k = len(targets)
         diag = np.diag(matrix).astype(np.complex64)
 
-        # Build phase array indexed by state index
+        # Build phase array indexed by state index.
+        # sv[i] uses big-endian qubit ordering: qubit q occupies bit n-1-q from the LSB.
         size = len(sv)
         phase = np.ones(size, dtype=np.complex64)
         for i in range(size):
             gate_idx = 0
             for bit_pos, q in enumerate(targets):
-                if (i >> q) & 1:
+                if (i >> (n - 1 - q)) & 1:
                     gate_idx |= 1 << (k - 1 - bit_pos)
             phase[i] = diag[gate_idx]
 
