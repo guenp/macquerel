@@ -206,6 +206,117 @@ Final pass to ensure full coverage matching §8 of the spec.
 
 ---
 
+## v0.2+ Implementation Plan
+
+What follows is everything in the design spec that is not yet implemented, grouped by milestone and priority.
+
+---
+
+### v0.1 completion — performance-critical gaps
+
+These items are described in the v0.1 spec but were deferred to a simpler correct implementation. They are the highest-value changes before moving to v0.2.
+
+**Step 8: Permutation gate fast path (`src/macquerel/backends/mlx_backend.py`)**
+
+Gate classification already identifies `"permutation"` gates (X, SWAP, CNOT) but `apply_matrix` only special-cases `"diagonal"` — permutation gates fall through to `_apply_general`. Permutation gates need no arithmetic, just a gather/scatter (or index-bit swap for SWAP/CNOT), so they should dispatch to a dedicated `_apply_permutation` method.
+
+**Step 9: SoA state representation (`src/macquerel/backends/mlx_backend.py`)**
+
+The spec mandates two `float32` arrays (`real`, `imag`) as the persistent state, not an interleaved `complex64` array. SoA is measured at up to 6.9× over interleaved storage and is described as "the single most important data-layout decision." Currently the MLX backend converts to SoA inside gate methods and immediately converts back. The state should stay in SoA form (two `mx.array`s) across gate calls, with the complex64 view reconstructed only at the API boundary (`statevector()`).
+
+**Step 10: `mx.fast.metal_kernel` gate hot path (`src/macquerel/backends/mlx_backend.py`)**
+
+The current `_apply_general` uses NumPy `tensordot` + MLX elementwise ops. The spec's optimized path uses a custom Metal kernel registered via `mx.fast.metal_kernel`: each GPU thread owns one `(i, i ⊕ 2ᵏ)` amplitude pair, loads both SoA `float32` values, applies the matrix, and scatters back. Double-buffering (ping-pong between two SoA buffer pairs) is required because MLX kernel inputs are `const device`. The kernel pseudocode is in §5.4 of the design spec and needs to be validated and debugged against a real build. A fused k-qubit kernel generalizes this to `2ⁿ⁻ᵏ` threads each gathering `2ᵏ` amplitudes.
+
+**Step 11: Reproducible RNG (`src/macquerel/backends/mlx_backend.py`, `src/macquerel/simulator.py`)**
+
+The spec requires `mx.random.key(seed)` for reproducible sampling. Expose an optional `seed` parameter on `Simulator.__init__` and thread it through to `MLXBackend.sample`.
+
+**Step 12: `Backend` Protocol ABC (`src/macquerel/backends/__init__.py`)**
+
+Define a formal `typing.Protocol` class with the full backend interface so that type checkers can verify backend conformance.
+
+```python
+class Backend(Protocol):
+    def allocate(self, n_qubits: int, dtype) -> np.ndarray: ...
+    def apply_matrix(self, sv, matrix, targets, controls) -> np.ndarray: ...
+    def measure(self, sv, qubits, *, collapse: bool) -> list[int]: ...
+    def sample(self, sv, qubits, shots) -> Counter: ...
+    def expectation_pauli(self, sv, pauli_strings) -> np.ndarray: ...
+    def abs2sum(self, sv, qubits) -> np.ndarray: ...
+```
+
+---
+
+### v0.2 — Metal backend, qubit remapping, expectation values
+
+**Step 13: Qubit remapping / cache-blocking compiler pass (`src/macquerel/compiler.py`)**
+
+Add a second compiler pass after gate fusion. The Doi–Horii technique: relabel qubits so the most frequently targeted qubits in each window land on the lowest indices (minimizing stride `2ᵏ`), inserting logical SWAP gates at chunk boundaries. Expose as `remap_qubits(circuit) → Circuit`. The existing fusion equivalence tests should also cover remapping: fused+remapped circuits must produce statevectors identical to unfused+unremapped.
+
+**Step 14: `expectation_pauli` and `abs2sum` (`src/macquerel/backends/cpu.py`, `src/macquerel/backends/mlx_backend.py`)**
+
+`abs2sum(sv, qubits)` — marginal probability sum over the given qubits (already computed internally in `sample`; expose as a first-class method).
+
+`expectation_pauli(sv, pauli_strings)` — expectation value of a Pauli operator or sum of Pauli strings. For a single Pauli term `P` on qubit `q`: reshape state to `(2,)*n`, apply the Pauli matrix, take the inner product with the original state. For a sum, loop over terms.
+
+**Step 15: `MetalBackend` (`src/macquerel/backends/metal_backend.py` or a C extension)**
+
+A compiled extension using metal-cpp and nanobind. Hand-written `.metal` shaders with 64-bit (`size_t`) indexing to exceed the MLX `uint32` ceiling at 32 qubits. Genuine in-place updates (no double-buffering needed). Build system: scikit-build-core + CMake. For ≤31 qubits it offers no throughput advantage over the MLX kernel, so its only purpose is the >31-qubit regime.
+
+**Step 16: Automatic backend selection (`src/macquerel/simulator.py`)**
+
+When `backend='auto'` (make this the new default): select `CPUBackend` for ≤14 qubits (GPU launch overhead dominates), `MLXBackend` for 15–31 qubits, `MetalBackend` for ≥32 qubits. Requires MetalBackend (Step 15).
+
+---
+
+### v0.2 test additions (`tests/`)
+
+- `test_compiler.py` — add remapping equivalence: circuits run with remap on/off must yield identical statevectors.
+- `test_metal_backend.py` — differential tests (CPU vs Metal) for circuits up to 32+ qubits, once MetalBackend exists.
+- `test_backend_protocol.py` — verify CPUBackend, MLXBackend, and MetalBackend all satisfy the Backend Protocol; test `expectation_pauli` and `abs2sum` against analytic values (e.g. ⟨Z⟩ = 1 for |0⟩, ⟨X⟩ = 1 for |+⟩).
+- `test_simulator.py` — add seed reproducibility test: two runs with the same seed must return identical shot counts.
+- `tests/test_known_circuits.py` — add Quantum Volume circuits and random-circuit-sampling spot checks.
+
+---
+
+### v0.3
+
+**Step 17: Cirq/Qiskit front-end adapters**
+
+`macquerel.from_cirq(circuit)` and `macquerel.from_qiskit(circuit)` converters so existing circuits can run unmodified on macquerel backends. Depends on optional `cirq-core` / `qiskit` extras in `pyproject.toml`.
+
+---
+
+### v1.0
+
+**Step 18: Benchmarking suite (`benchmarks/`)**
+
+Implement the full plan from §9 of the design spec:
+- API-level microbenchmarks: single-gate throughput as a function of target qubit index and qubit count, reported as GB/s vs theoretical peak.
+- Circuit-level macrobenchmarks: QFT, random circuit sampling, QAOA layers, Quantum Volume, swept 20–32 qubits.
+- Comparison harness vs qsim CPU and Qiskit Aer statevector.
+- `max_fused_qubits` sweep ∈ {1,2,3,4,5,6} to validate the "4 is optimal" finding on Apple hardware.
+
+**Step 19: Shot batch-size autotuning (`src/macquerel/simulator.py`)**
+
+Autotune the shot batch passed to `mx.random.categorical` by doubling until throughput plateaus (the Tsim approach). Expose `batch_shots` parameter on `Simulator` with `'auto'` default.
+
+**Step 20: Per-chip fusion-width autotuning (`src/macquerel/compiler.py`)**
+
+At install time (or first run), measure bandwidth/FLOP ratio on the local chip and pick the `max_fused_qubits` value that maximises throughput rather than hardcoding 4.
+
+---
+
+### v2
+
+- **Noise channels / density matrices** — `DensityMatrixSimulator` with Kraus-operator channels.
+- **Memory-mapped out-of-core backend** — state vector backed by an NVMe file via `np.memmap`, for single large runs past DRAM capacity.
+- **Batched small-circuit simulation** — `BatchedSimulator` packing many small circuits (QML/VQE parameter sweeps) into one kernel launch.
+- **Multi-Mac over Thunderbolt** — distributed state vector using index-bit partitioning across machines.
+
+---
+
 ## Verification
 
 After each step, run `uv run pytest tests/ -x -q` and confirm the new tests pass before moving to the next step. Final verification:
