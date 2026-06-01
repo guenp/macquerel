@@ -91,3 +91,20 @@ def test_qft_4qubit():
     qft_ref = np.fft.ifft(input_vec) * np.sqrt(2**n)
 
     assert np.allclose(sv_qft, qft_ref, atol=1e-4)
+
+
+def test_auto_backend_bell():
+    """Simulator with backend='auto' must run correctly on a Bell circuit."""
+    sim = Simulator()  # auto
+    qc = Circuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure_all()
+
+    result = sim.run(qc, shots=1000)
+    assert sum(result.values()) == 1000
+    # GHZ/Bell: only '00' and '11' should appear
+    assert set(result.keys()) <= {"00", "11"}
+    # Both outcomes should have roughly 50% probability
+    for bits in ("00", "11"):
+        assert 350 < result.get(bits, 0) < 650, f"Unexpected count for {bits}: {result}"

@@ -8,9 +8,16 @@ import numpy as np
 class CPUBackend:
     """NumPy reference backend. Correctness over speed."""
 
+    def __init__(self, seed: int | None = None) -> None:
+        if seed is not None:
+            np.random.seed(seed)
+
     def allocate(self, n_qubits: int, dtype=np.complex64) -> np.ndarray:
         sv = np.zeros(2**n_qubits, dtype=dtype)
         sv[0] = 1.0
+        return sv
+
+    def to_numpy(self, sv: np.ndarray) -> np.ndarray:
         return sv
 
     def apply_matrix(
@@ -24,23 +31,12 @@ class CPUBackend:
         k = len(targets)
 
         if controls:
-            # verify that all control qubits are |1⟩ across all amplitudes —
-            # handled per-amplitude inside the tensor trick by restricting axes.
-            # Instead we build the full controlled matrix explicitly.
-            # For the CPU reference we delegate to _apply_controlled.
             return self._apply_controlled(sv, matrix, targets, controls)
 
         state = sv.reshape((2,) * n)
-        # reshape gate to tensor with 2*k legs
         gate_t = matrix.astype(sv.dtype).reshape((2,) * (2 * k))
-        # contract gate output legs (first k) against target axes of state
-        # result has shape with target axes replaced, then moved to front
         out = np.tensordot(gate_t, state, axes=(list(range(k, 2 * k)), targets))
-        # tensordot puts the new target axes first, then the remaining state axes
-        # we need to move them back to positions `targets`
         remaining = [i for i in range(n) if i not in targets]
-        # out shape: (2,)*k + remaining axes in their original relative order
-        # build inverse permutation
         dest = targets + remaining
         inv_perm = [0] * n
         for new_pos, old_pos in enumerate(dest):
@@ -62,22 +58,10 @@ class CPUBackend:
         state = sv.reshape((2,) * n)
 
         gate_t = matrix.astype(sv.dtype).reshape((2,) * (2 * k))
-        # We'll iterate over all control combinations.
-        # The unitary applies only where all control bits == 1.
-        # Build a mask array of shape (2,)*n that is True where controls are all 1.
-        mask = np.ones((2,) * n, dtype=bool)
-        for c in controls:
-            # zero out all slices where control qubit c == 0
-            idx = [slice(None)] * n
-            idx[c] = 0
-            mask[tuple(idx)] = False
 
-        # Apply the gate to the masked slice:
-        # extract the sub-tensor where controls are 1, apply gate, write back.
         ctrl_idx = tuple(1 if i in controls else slice(None) for i in range(n))
-        sub = state[ctrl_idx]  # shape: (2,)*len(free_axes)
+        sub = state[ctrl_idx]
         free_axes = [i for i in range(n) if i not in controls]
-        # targets within free_axes (find local indices)
         local_targets = [free_axes.index(t) for t in targets]
         n_free = len(free_axes)
 
@@ -106,8 +90,6 @@ class CPUBackend:
 
         outcomes = []
         for q in qubits:
-            complementary = tuple(i for i in range(n) if i != q and i not in qubits[:qubits.index(q)])
-            # marginal over already-decided qubits: sum over all other axes
             all_axes = list(range(n))
             sum_axes = tuple(i for i in all_axes if i != q)
             marginal = np.sum(probs2, axis=sum_axes)
@@ -121,7 +103,6 @@ class CPUBackend:
             outcomes.append(outcome)
 
             if collapse:
-                # zero amplitudes inconsistent with outcome, then renormalize
                 idx = [slice(None)] * n
                 idx[q] = 1 - outcome
                 state[tuple(idx)] = 0.0
@@ -143,11 +124,8 @@ class CPUBackend:
         state = sv.reshape((2,) * n)
         probs2 = np.abs(state) ** 2
 
-        # marginalise to the joint distribution over `qubits`
         sum_axes = tuple(i for i in range(n) if i not in qubits)
         joint = np.sum(probs2, axis=sum_axes)
-        # joint now has shape (2,)*len(qubits) with axes in original order
-        # reorder so that qubits appear in the given order
         qubits_in_state_order = sorted(range(len(qubits)), key=lambda i: qubits[i])
         joint = np.transpose(joint, qubits_in_state_order)
         flat_probs = joint.reshape(-1)
@@ -161,3 +139,20 @@ class CPUBackend:
             bits = format(idx, f"0{len(qubits)}b")
             result[bits] += 1
         return result
+
+    def abs2sum(self, sv: np.ndarray, qubits: list[int]) -> np.ndarray:
+        n = int(np.log2(len(sv)))
+        probs = np.abs(sv.reshape((2,) * n)) ** 2
+        sum_axes = tuple(i for i in range(n) if i not in qubits)
+        return np.sum(probs, axis=sum_axes).reshape(-1)
+
+    def expectation_pauli(self, sv: np.ndarray, pauli_strings) -> np.ndarray:
+        from macquerel.gates import X, Y, Z, I as I_gate
+        PAULI_MAP = {"X": X(), "Y": Y(), "Z": Z(), "I": I_gate()}
+        results = []
+        for coeff, terms in pauli_strings:
+            psi_p = sv.copy()
+            for pauli_char, qubit in terms:
+                psi_p = self.apply_matrix(psi_p, PAULI_MAP[pauli_char], [qubit])
+            results.append(coeff * float(np.real(np.dot(sv.conj(), psi_p))))
+        return np.array(results)

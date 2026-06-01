@@ -42,20 +42,18 @@ def _random_ops(n: int, depth: int, rng: np.random.Generator) -> list[tuple]:
     return ops
 
 
+def _flush(backend, sv) -> None:
+    """Materialise any pending MLX lazy computation."""
+    if not isinstance(sv, np.ndarray):
+        backend.to_numpy(sv)
+
+
 def _run(backend, n: int, ops: list[tuple]) -> float:
     sv = backend.allocate(n)
     t0 = time.perf_counter()
     for mat, targets in ops:
         sv = backend.apply_matrix(sv, mat, targets)
-    # flush MLX lazy graph if present
-    try:
-        import mlx.core as mx
-        if isinstance(sv, np.ndarray):
-            pass
-        else:
-            mx.eval(sv)
-    except ImportError:
-        pass
+    _flush(backend, sv)
     return time.perf_counter() - t0
 
 
@@ -63,11 +61,7 @@ def _warmup(backend, n: int, ops: list[tuple]) -> None:
     sv = backend.allocate(n)
     for mat, targets in ops[:min(10, len(ops))]:
         sv = backend.apply_matrix(sv, mat, targets)
-    try:
-        import mlx.core as mx
-        mx.eval(sv) if not isinstance(sv, np.ndarray) else None
-    except ImportError:
-        pass
+    _flush(backend, sv)
 
 
 def benchmark(

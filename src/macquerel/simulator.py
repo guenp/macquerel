@@ -1,49 +1,71 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import TYPE_CHECKING
 
 import numpy as np
 
 from macquerel.circuit import Circuit, Gate, MeasureOp
 from macquerel.compiler import fuse_gates
 
-if TYPE_CHECKING:
-    from macquerel.backends.cpu import CPUBackend
+try:
+    import mlx.core as mx  # noqa: F401
+    _MLX_AVAILABLE = True
+except ImportError:
+    _MLX_AVAILABLE = False
 
 
-def _make_backend(name: str, dtype: str):
+def _select_backend(n_qubits: int) -> str:
+    if n_qubits <= 14:
+        return "cpu"
+    if _MLX_AVAILABLE and n_qubits <= 31:
+        return "mlx"
+    return "cpu"
+
+
+def _make_backend(name: str, dtype: str, seed: int | None = None):
     if name == "cpu":
         from macquerel.backends.cpu import CPUBackend
-        return CPUBackend()
+        return CPUBackend(seed=seed)
     if name == "mlx":
         from macquerel.backends.mlx_backend import MLXBackend
-        return MLXBackend()
-    raise ValueError(f"Unknown backend: {name!r}. Choose 'cpu' or 'mlx'.")
+        return MLXBackend(seed=seed)
+    raise ValueError(f"Unknown backend: {name!r}. Choose 'cpu', 'mlx', or 'auto'.")
 
 
 class Simulator:
-    def __init__(self, backend: str = "cpu", dtype: str = "complex64"):
+    def __init__(
+        self,
+        backend: str = "auto",
+        dtype: str = "complex64",
+        seed: int | None = None,
+    ) -> None:
         self.backend_name = backend
         self.dtype = dtype
-        self._backend = _make_backend(backend, dtype)
+        self._seed = seed
         self._np_dtype = np.complex64 if dtype == "complex64" else np.complex128
+        self._backend = None if backend == "auto" else _make_backend(backend, dtype, seed)
+
+    def _get_backend(self, n_qubits: int):
+        if self._backend is not None:
+            return self._backend
+        name = _select_backend(n_qubits)
+        return _make_backend(name, self.dtype, self._seed)
 
     def statevector(self, circuit: Circuit) -> np.ndarray:
-        sv = self._backend.allocate(circuit.n_qubits, self._np_dtype)
+        backend = self._get_backend(circuit.n_qubits)
+        sv = backend.allocate(circuit.n_qubits, self._np_dtype)
         fused = fuse_gates(circuit)
         for op in fused.ops:
             if isinstance(op, Gate):
-                sv = self._backend.apply_matrix(sv, op.matrix, op.targets, op.controls or None)
+                sv = backend.apply_matrix(sv, op.matrix, op.targets, op.controls or None)
             elif isinstance(op, MeasureOp):
-                self._backend.measure(sv, op.qubits, collapse=True)
-        return sv
+                backend.measure(sv, op.qubits, collapse=True)
+        return backend.to_numpy(sv)
 
     def run(self, circuit: Circuit, shots: int = 1000) -> Counter:
+        backend = self._get_backend(circuit.n_qubits)
         fused = fuse_gates(circuit)
 
-        # Split circuit at measurement boundaries:
-        # collect gate segments and the measurement qubit lists
         segments: list[list[Gate]] = []
         measurements: list[list[int]] = []
         current_gates: list[Gate] = []
@@ -55,32 +77,28 @@ class Simulator:
                 segments.append(current_gates)
                 measurements.append(op.qubits)
                 current_gates = []
-        # trailing gates after last measure (no measurement)
-        if current_gates and not measurements:
-            # no measurements at all — sample from final state
-            sv = self._backend.allocate(circuit.n_qubits, self._np_dtype)
-            for gate in current_gates:
-                sv = self._backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
-            return self._backend.sample(sv, list(range(circuit.n_qubits)), shots)
 
-        sv = self._backend.allocate(circuit.n_qubits, self._np_dtype)
+        if current_gates and not measurements:
+            sv = backend.allocate(circuit.n_qubits, self._np_dtype)
+            for gate in current_gates:
+                sv = backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
+            return backend.sample(sv, list(range(circuit.n_qubits)), shots)
+
+        sv = backend.allocate(circuit.n_qubits, self._np_dtype)
         outcome_bitstrings: list[Counter] = []
 
         for gates, meas_qubits in zip(segments, measurements):
             for gate in gates:
-                sv = self._backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
-            counts = self._backend.sample(sv, meas_qubits, shots)
+                sv = backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
+            counts = backend.sample(sv, meas_qubits, shots)
             outcome_bitstrings.append(counts)
 
-        # apply trailing gates
         for gate in current_gates:
-            sv = self._backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
+            sv = backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
 
-        # If only one measurement, return it directly
         if len(outcome_bitstrings) == 1:
             return outcome_bitstrings[0]
 
-        # Multiple measurement points: return combined bitstrings
         result: Counter = Counter()
         for c in outcome_bitstrings:
             for k, v in c.items():

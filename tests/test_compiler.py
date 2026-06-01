@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from macquerel.circuit import Circuit, Gate, MeasureOp
-from macquerel.compiler import fuse_gates
+from macquerel.compiler import fuse_gates, remap_qubits
 from macquerel.backends.cpu import CPUBackend
 import macquerel.gates as g
 
@@ -87,3 +87,65 @@ def test_fusion_limit():
     # BUT max_fused_qubits=4 means we stop at 4, so we should have 2 groups
     total_qubits = sum(len(op.targets) + len(op.controls) for op in gate_ops)
     assert total_qubits == 5
+
+
+def test_remap_preserves_distribution():
+    """Remapped and original circuits must produce identical measurement distributions."""
+    # Build a 4-qubit circuit with unequal qubit access frequency.
+    # Qubits 0 and 1 are used much more than 2 and 3.
+    qc = Circuit(4)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.rz(0, 0.3)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.rz(1, 0.7)
+    qc.h(2)
+    qc.cx(2, 3)
+    qc.measure_all()
+
+    remapped = remap_qubits(qc)
+
+    # Run both circuits
+    cpu = CPUBackend()
+
+    def run_sv(circuit):
+        sv = cpu.allocate(circuit.n_qubits)
+        for op in circuit.ops:
+            if isinstance(op, Gate):
+                sv = cpu.apply_matrix(sv, op.matrix, op.targets, op.controls or None)
+        return sv
+
+    sv_orig = run_sv(qc)
+    sv_remap = run_sv(remapped)
+
+    # Recover the permutation from remap_qubits to invert bitstring labels
+    from collections import Counter as _Counter
+    freq: _Counter[int] = _Counter()
+    for op in qc.ops:
+        if isinstance(op, Gate):
+            for q_idx in op.targets + op.controls:
+                freq[q_idx] += 1
+    sorted_qubits = sorted(range(qc.n_qubits), key=lambda q: (-freq[q], q))
+    perm = {old: new for new, old in enumerate(sorted_qubits)}
+    inv_perm = {new: old for old, new in perm.items()}
+
+    # Compute marginal probabilities for all qubits from both statevectors
+    n = qc.n_qubits
+    probs_orig = np.abs(sv_orig) ** 2
+    probs_remap = np.abs(sv_remap) ** 2
+
+    # For each basis state in the remapped SV, compute the equivalent original basis state
+    # and check probabilities match
+    for idx in range(2**n):
+        # bits in remapped ordering
+        remap_bits = [(idx >> (n - 1 - new_q)) & 1 for new_q in range(n)]
+        # convert back to original ordering
+        orig_idx = 0
+        for new_q, bit in enumerate(remap_bits):
+            old_q = inv_perm[new_q]
+            orig_idx |= bit << (n - 1 - old_q)
+        assert abs(probs_remap[idx] - probs_orig[orig_idx]) < 1e-5, (
+            f"Probability mismatch at remapped={idx}, orig={orig_idx}: "
+            f"{probs_remap[idx]} vs {probs_orig[orig_idx]}"
+        )

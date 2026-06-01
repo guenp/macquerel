@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 import numpy as np
 
 from macquerel.circuit import Circuit, Gate, MeasureOp
@@ -130,4 +132,41 @@ def fuse_gates(circuit: Circuit, max_fused_qubits: int = 4) -> Circuit:
         current_qubits.update(op_qubits)
 
     flush()
+    return result
+
+
+def remap_qubits(circuit: Circuit) -> Circuit:
+    """Relabel qubit indices so frequently-targeted qubits land on lowest indices.
+
+    This is a single-window global relabeling (Doi-Horii technique). The returned
+    circuit is logically equivalent: measurement qubit labels are updated to match,
+    so that sampling produces the same distribution when labels are consistently
+    applied via the returned permutation.
+
+    Returns the remapped Circuit. The permutation applied is deterministic: the
+    qubit with the highest gate-access count receives index 0, etc. Ties are broken
+    by original qubit index (lower index wins).
+    """
+    freq: Counter[int] = Counter()
+    for op in circuit.ops:
+        if isinstance(op, Gate):
+            for q in op.targets + op.controls:
+                freq[q] += 1
+
+    # Sort by descending frequency; ties broken by ascending original index.
+    sorted_qubits = sorted(range(circuit.n_qubits), key=lambda q: (-freq[q], q))
+    perm = {old: new for new, old in enumerate(sorted_qubits)}
+
+    result = Circuit(circuit.n_qubits)
+    for op in circuit.ops:
+        if isinstance(op, Gate):
+            result.ops.append(Gate(
+                name=op.name,
+                matrix=op.matrix,
+                targets=[perm[q] for q in op.targets],
+                controls=[perm[q] for q in op.controls],
+                kind=op.kind,
+            ))
+        elif isinstance(op, MeasureOp):
+            result.ops.append(MeasureOp(qubits=[perm[q] for q in op.qubits]))
     return result
