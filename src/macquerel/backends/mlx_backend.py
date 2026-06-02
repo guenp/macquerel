@@ -11,69 +11,31 @@ try:
 except ImportError:
     _MLX_AVAILABLE = False
 
-_METAL_KERNEL = None
-
-
-def _try_register_metal_kernel() -> None:
-    global _METAL_KERNEL
-    if not _MLX_AVAILABLE:
-        return
-    try:
-        import mlx.core.metal  # noqa: F401 — only present on Apple Silicon
-        source = r"""
-        uint p = thread_position_in_grid.x;
-        uint k = targets[0];
-        uint low = (1u << k) - 1u;
-        uint i0 = ((p & ~low) << 1) | (p & low);
-        uint i1 = i0 | (1u << k);
-        float a0r = real_in[i0], a0i = imag_in[i0];
-        float a1r = real_in[i1], a1i = imag_in[i1];
-        real_out[i0] = mat[0]*a0r - mat[1]*a0i + mat[2]*a1r - mat[3]*a1i;
-        imag_out[i0] = mat[0]*a0i + mat[1]*a0r + mat[2]*a1i + mat[3]*a1r;
-        real_out[i1] = mat[4]*a0r - mat[5]*a0i + mat[6]*a1r - mat[7]*a1i;
-        imag_out[i1] = mat[4]*a0i + mat[5]*a0r + mat[6]*a1i + mat[7]*a1r;
-        """
-        _METAL_KERNEL = mx.fast.metal_kernel(
-            name="apply_1q_gate",
-            input_names=["real_in", "imag_in", "mat", "targets"],
-            output_names=["real_out", "imag_out"],
-            source=source,
-        )
-    except (ImportError, AttributeError):
-        pass
-
-
-_try_register_metal_kernel()
-
 
 @dataclass
 class MLXState:
-    """SoA statevector: two float32 mx.arrays. Avoids repeated interleaved↔SoA conversion."""
-    real: "mx.array"  # shape (2**n,), float32
-    imag: "mx.array"  # shape (2**n,), float32
+    """Statevector held as a single complex64 mx.array (P4: native complex storage)."""
+    data: "mx.array"  # shape (2**n,), complex64
     n_qubits: int
 
 
-def _diag_phase_kernel(real, imag, diag_r, diag_i, gate_idx):
-    """Diagonal gate: gather the per-amplitude phase, then complex-multiply.
+def _diag_phase_kernel(data, diag, gate_idx):
+    """Diagonal gate: gather the per-amplitude complex phase and multiply.
 
-    Pure-functional so mx.compile can fuse the gather and the six elementwise
-    ops into a single kernel (cached per input shape)."""
-    pr = diag_r[gate_idx]
-    pi = diag_i[gate_idx]
-    return pr * real - pi * imag, pr * imag + pi * real
+    Pure-functional so mx.compile can fuse the gather + multiply into one kernel."""
+    return diag[gate_idx] * data
 
 
-def _perm_gather_kernel(real, imag, src):
-    """Permutation gate: gather both SoA components by source index."""
-    return real[src], imag[src]
+def _perm_gather_kernel(data, src):
+    """Permutation gate: gather amplitudes by source index."""
+    return data[src]
 
 
 class MLXBackend:
     """
-    MLX-accelerated backend for Apple Silicon. State is stored in SoA form
-    (two float32 mx.arrays) between gate calls. On non-Apple platforms where
-    mlx is not installed, raises ImportError.
+    MLX-accelerated backend for Apple Silicon. State is stored as a single
+    complex64 mx.array between gate calls. On non-Apple platforms where mlx is
+    not installed, raises ImportError.
     """
 
     def __init__(self, seed: int | None = None) -> None:
@@ -117,18 +79,15 @@ class MLXBackend:
 
     def allocate(self, n_qubits: int, dtype=np.complex64) -> MLXState:
         size = 2**n_qubits
-        real_np = np.zeros(size, dtype=np.float32)
-        real_np[0] = 1.0
-        real = mx.array(real_np)
-        imag = mx.zeros(size, dtype=mx.float32)
-        mx.eval(real, imag)
-        return MLXState(real=real, imag=imag, n_qubits=n_qubits)
+        arr = np.zeros(size, dtype=np.complex64)
+        arr[0] = 1.0
+        data = mx.array(arr)
+        mx.eval(data)
+        return MLXState(data=data, n_qubits=n_qubits)
 
     def to_numpy(self, sv: MLXState) -> np.ndarray:
-        mx.eval(sv.real, sv.imag)
-        r = np.array(sv.real, dtype=np.float32)
-        i = np.array(sv.imag, dtype=np.float32)
-        return (r + 1j * i).astype(np.complex64)
+        mx.eval(sv.data)
+        return np.array(sv.data).astype(np.complex64)
 
     def apply_matrix(
         self,
@@ -146,32 +105,31 @@ class MLXBackend:
             return self._apply_permutation(sv, mat, targets)
         return self._apply_general(sv, mat, targets, controls)
 
-    def _apply_diagonal(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
-        """Diagonal gate: elementwise phase multiply."""
-        n = sv.n_qubits
+    def _gate_index(self, targets: list[int], n: int) -> "mx.array":
+        """Pack the k target bits of every basis index into a gate-row index."""
         k = len(targets)
-        diag = np.diag(matrix).astype(np.complex64)
-        diag_r = mx.array(diag.real.astype(np.float32))  # zero-copy
-        diag_i = mx.array(diag.imag.astype(np.float32))  # zero-copy
-
-        size = 2**n
         indices = self._arange(n)
-        gate_idx = mx.zeros(size, dtype=mx.uint32)
+        gate_idx = mx.zeros(2**n, dtype=mx.uint32)
         for bit_pos, q in enumerate(targets):
             bit = (indices >> (n - 1 - q)) & self._one
             gate_idx = gate_idx | (bit << (k - 1 - bit_pos))
+        return gate_idx
 
-        # Compiled gather + complex multiply (kept lazy; eval at segment boundary).
-        new_real, new_imag = self._diag_kernel(sv.real, sv.imag, diag_r, diag_i, gate_idx)
-        return MLXState(real=new_real, imag=new_imag, n_qubits=n)
+    def _apply_diagonal(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
+        """Diagonal gate: elementwise complex phase multiply."""
+        n = sv.n_qubits
+        diag_mx = mx.array(np.diag(matrix).astype(np.complex64))
+        gate_idx = self._gate_index(targets, n)
+        new_data = self._diag_kernel(sv.data, diag_mx, gate_idx)
+        return MLXState(data=new_data, n_qubits=n)
 
     def _apply_permutation(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
         """Permutation gate: pure gather — no multiply/add needed.
 
         The gather index array is built entirely on-device with mx.arange +
-        bitwise ops (mirroring _apply_diagonal), so there is no host-side O(2**n)
-        NumPy table build and no host->device copy per gate. The only host work
-        is the tiny 2**k inverse-permutation lookup over the target subspace.
+        bitwise ops, so there is no host-side O(2**n) NumPy table build and no
+        host->device copy per gate. The only host work is the tiny 2**k
+        inverse-permutation lookup over the target subspace.
         """
         n = sv.n_qubits
         size = 2**n
@@ -207,68 +165,34 @@ class MLXBackend:
             bit = (in_row >> (k - 1 - j)) & one
             src = (src & clear_mask) | (bit << shift)
 
-        new_real, new_imag = self._perm_kernel(sv.real, sv.imag, src)
-        return MLXState(real=new_real, imag=new_imag, n_qubits=n)
-
-    def _apply_metal_kernel_1q(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
-        """Single-qubit dense gate via custom Metal kernel (Apple Silicon only)."""
-        n = sv.n_qubits
-        mat_flat = np.zeros(8, dtype=np.float32)
-        m = matrix.astype(np.complex64)
-        mat_flat[0] = m[0, 0].real; mat_flat[1] = m[0, 0].imag
-        mat_flat[2] = m[0, 1].real; mat_flat[3] = m[0, 1].imag
-        mat_flat[4] = m[1, 0].real; mat_flat[5] = m[1, 0].imag
-        mat_flat[6] = m[1, 1].real; mat_flat[7] = m[1, 1].imag
-        mx_mat = mx.array(mat_flat)
-        mx_targets = mx.array(np.array([n - 1 - targets[0]], dtype=np.uint32))
-        threads = 2 ** (n - 1)
-        out_real, out_imag = _METAL_KERNEL(
-            inputs=[sv.real, sv.imag, mx_mat, mx_targets],
-            output_shapes=[(2**n,), (2**n,)],
-            output_dtypes=[mx.float32, mx.float32],
-            grid=(threads, 1, 1),
-            threadgroup=(min(threads, 256), 1, 1),
-        )
-        return MLXState(real=out_real, imag=out_imag, n_qubits=n)
+        new_data = self._perm_kernel(sv.data, src)
+        return MLXState(data=new_data, n_qubits=n)
 
     def _dense_apply(
         self,
-        real: "mx.array",
-        imag: "mx.array",
+        data: "mx.array",
         mat: np.ndarray,
         targets: list[int],
         n: int,
-    ) -> tuple["mx.array", "mx.array"]:
+    ) -> "mx.array":
         """Apply a dense k-qubit matrix to `targets` over the full state.
 
-        Returns flattened (real, imag) MLX arrays. Stays entirely on the GPU
-        via mx.tensordot — no numpy round-trip.
+        Single complex64 tensordot (vs four real tensordots in the SoA layout),
+        then transpose the contracted axes back into canonical qubit order.
         """
         k = len(targets)
-        mat_r = mx.array(mat.real.astype(np.float32)).reshape((2,) * (2 * k))
-        mat_i = mx.array(mat.imag.astype(np.float32)).reshape((2,) * (2 * k))
-
-        state_r = real.reshape((2,) * n)
-        state_i = imag.reshape((2,) * n)
-
+        mat_mx = mx.array(mat.astype(np.complex64)).reshape((2,) * (2 * k))
+        state = data.reshape((2,) * n)
         input_axes = list(range(k, 2 * k))
 
-        out_rr = mx.tensordot(mat_r, state_r, axes=[input_axes, targets])
-        out_ri = mx.tensordot(mat_r, state_i, axes=[input_axes, targets])
-        out_ir = mx.tensordot(mat_i, state_r, axes=[input_axes, targets])
-        out_ii = mx.tensordot(mat_i, state_i, axes=[input_axes, targets])
-
-        out_r = out_rr - out_ii
-        out_i = out_ri + out_ir
+        out = mx.tensordot(mat_mx, state, axes=[input_axes, targets])
 
         remaining = [i for i in range(n) if i not in targets]
         dest = targets + remaining
         inv_perm = [0] * n
         for new_pos, old_pos in enumerate(dest):
             inv_perm[old_pos] = new_pos
-        out_r = mx.transpose(out_r, inv_perm).reshape(-1)
-        out_i = mx.transpose(out_i, inv_perm).reshape(-1)
-        return out_r, out_i
+        return mx.transpose(out, inv_perm).reshape(-1)
 
     def _apply_controlled(
         self,
@@ -284,21 +208,18 @@ class MLXBackend:
         control bits set) via mx.where. No CPU fallback / numpy round-trip.
         """
         n = sv.n_qubits
-        size = 2**n
+        gated = self._dense_apply(sv.data, matrix, targets, n)
 
-        gated_r, gated_i = self._dense_apply(sv.real, sv.imag, matrix, targets, n)
-
-        indices = mx.arange(size, dtype=mx.uint32)
-        one = mx.array(1, dtype=mx.uint32)
+        indices = self._arange(n)
+        one = self._one
         mask = None
         for c in controls:
             bit = (indices >> (n - 1 - c)) & one
             cond = bit == one
             mask = cond if mask is None else (mask & cond)
 
-        new_real = mx.where(mask, gated_r, sv.real)
-        new_imag = mx.where(mask, gated_i, sv.imag)
-        return MLXState(real=new_real, imag=new_imag, n_qubits=n)
+        new_data = mx.where(mask, gated, sv.data)
+        return MLXState(data=new_data, n_qubits=n)
 
     def _apply_general(
         self,
@@ -309,17 +230,13 @@ class MLXBackend:
     ) -> MLXState:
         """General dense gate, kept on the GPU via mx.tensordot."""
         n = sv.n_qubits
-        k = len(targets)
         mat = matrix.astype(np.complex64)
-
-        if _METAL_KERNEL is not None and k == 1 and not controls:
-            return self._apply_metal_kernel_1q(sv, mat, targets)
 
         if controls:
             return self._apply_controlled(sv, mat, targets, controls)
 
-        out_r, out_i = self._dense_apply(sv.real, sv.imag, mat, targets, n)
-        return MLXState(real=out_r, imag=out_i, n_qubits=n)
+        out = self._dense_apply(sv.data, mat, targets, n)
+        return MLXState(data=out, n_qubits=n)
 
     def measure(
         self,
@@ -332,10 +249,8 @@ class MLXBackend:
         sv_np = self.to_numpy(sv)
         outcomes = CPUBackend().measure(sv_np, qubits, collapse=collapse)
         if collapse:
-            mx.eval(sv.real, sv.imag)
-            sv.real = mx.array(sv_np.real.astype(np.float32))
-            sv.imag = mx.array(sv_np.imag.astype(np.float32))
-            mx.eval(sv.real, sv.imag)
+            sv.data = mx.array(sv_np.astype(np.complex64))
+            mx.eval(sv.data)
         return outcomes
 
     def sample(
@@ -345,10 +260,8 @@ class MLXBackend:
         shots: int,
     ) -> Counter:
         n = sv.n_qubits
-        mx.eval(sv.real, sv.imag)
-        real_np = np.array(sv.real, dtype=np.float32)
-        imag_np = np.array(sv.imag, dtype=np.float32)
-        state = (real_np + 1j * imag_np).reshape((2,) * n)
+        mx.eval(sv.data)
+        state = np.array(sv.data).reshape((2,) * n)
         probs2 = np.abs(state) ** 2
 
         sum_axes = tuple(i for i in range(n) if i not in qubits)
@@ -374,10 +287,9 @@ class MLXBackend:
 
     def abs2sum(self, sv: MLXState, qubits: list[int]) -> np.ndarray:
         n = sv.n_qubits
-        mx.eval(sv.real, sv.imag)
-        real_np = np.array(sv.real, dtype=np.float32)
-        imag_np = np.array(sv.imag, dtype=np.float32)
-        probs = (real_np**2 + imag_np**2).reshape((2,) * n)
+        mx.eval(sv.data)
+        arr = np.array(sv.data)
+        probs = (np.abs(arr) ** 2).reshape((2,) * n)
         sum_axes = tuple(i for i in range(n) if i not in qubits)
         return np.sum(probs, axis=sum_axes).reshape(-1)
 
