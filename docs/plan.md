@@ -309,15 +309,21 @@ that widen the gap well beyond the floor.
   bytes. Targets causes (3) and (7). Deliberately does **not** cache full `2ⁿ` per-target
   index tables — those would grow memory unboundedly and the on-device rebuild is cheap
   after P2.
-- **Step P4 — Evaluate native `complex64` storage (medium–high impact, higher effort).
-  ⏸ DEFERRED.** One tensordot instead of four, half the kernels for elementwise ops. The
-  spec cites up to 6.9× for SoA over interleaved, so this needs an A/B benchmark on current
-  MLX before committing — deferred until that measurement can be run. Targets cause (4).
-- **Step P5 — Avoid the full transpose copy (medium impact, medium effort). ⏸ DEFERRED.**
-  Only affects `_dense_apply`, which is rarely hit: single-qubit dense gates use the Metal
-  kernel and the common 2-qubit gates (CNOT/CZ/SWAP) are permutation/diagonal. CPU pays the
-  same transpose, so it is not a CPU-vs-MLX gap. Low value; needs a benchmark to justify the
-  rewrite risk. Targets cause (5).
+- **Step P4 — Native `complex64` storage (medium–high impact, higher effort). ✅ DONE
+  (`1eb61db`).** State is now a single complex64 array: one complex tensordot instead of
+  four real ones, one complex gather for diagonal/permutation, and the SoA-only Metal 1q
+  kernel is dropped (1q dense gates go through the complex tensordot). A/B vs the SoA backend:
+  neutral on `bench_backends` (1.01–1.04× at 18–22q — complex tensordot matches the dropped
+  Metal kernel), and faster on dense/fused circuits (`bench_circuits` @20q: dense 1.16×, QFT
+  1.08×). **This refutes the spec's "SoA up to 6.9× over interleaved" claim on MLX 0.31** —
+  the layouts are equivalent here, and complex64 is simpler (one array, one tensordot, no
+  custom kernel). Targets cause (4).
+- **Step P5 — Avoid the full transpose copy via einsum (medium impact). ❌ TRIED & REVERTED
+  (`b4b0171` → `50d3d54`).** Replaced `tensordot`+`transpose` in `_dense_apply` with a single
+  canonical-order `einsum`. A/B on `bench_circuits` @18q showed einsum **slower** on every
+  dense/fused workload (QFT 5.3→6.2, QAOA 2.8→4.2, dense 21.3→26.2 ms): MLX's `einsum`
+  decomposes to a costlier sequence than `tensordot`+`transpose`. Premise false on MLX 0.31;
+  reverted. Targets cause (5).
 - **Step P6 — Fuse before MLX dispatch. ✅ ALREADY SATISFIED.** The simulator already runs
   the fusion pass on the hot path (`statevector()` and `run()` call `fuse_gates`). The
   `bench_backends.py` microbenchmark deliberately stays unfused to measure raw per-gate
@@ -325,15 +331,19 @@ that widen the gap well beyond the floor.
 - **Step P7 — Re-tune the auto-select crossover (low effort). ✅ DONE (`351376c`).**
   `_select_backend` now routes ≤16 qubits to CPU (was ≤14) and MLX for 17–31, matching the
   measured crossover (CPU wins through 16q, MLX from 18q+).
-- **Step P8 — `mx.compile` the hot gate kernels (low–medium impact, low effort).
-  ⏸ DEFERRED.** Interacts with the deferred-evaluation graph from P1 and the variable
-  per-gate shapes; benefit is uncertain without a benchmark. Deferred.
+- **Step P8 — `mx.compile` the hot gate kernels (low–medium impact, low effort). ✅ DONE
+  (`b6bef6f`).** Compiled the diagonal phase kernel and permutation gather. A/B (single
+  qubit count, reps=5): modest net win where MLX is used — 20q 1.09×, 22q 1.12× — with a
+  small ~0.88× compile-overhead regression at 18q. Kept for the large-n gain; benefit is
+  incremental because the diagonal chain already fuses under deferred eval (P1).
 
 The two highest-leverage changes were **P1** (defer eval) and **P2** (kill host-side perm
-work). Combined with P3 and P7, MLX went from slower than CPU everywhere to **2.4–5.5×
-faster at 18–22 qubits** (see `benchmarks/data/`). The remaining steps (P4, P5, P8) are
-deferred because they are perf-sensitive and need A/B benchmarking to justify — they should
-be revisited with the benchmark harness rather than implemented blind.
+work); together they flipped MLX from slower to faster than CPU. P3, P7, P8, and P4 then
+added incremental gains and simplification, leaving MLX **2.4–5.6× faster at 18–22 qubits**
+(see `benchmarks/data/` and `benchmark-2.png`). **P5 was tried and reverted** (einsum
+regressed). **P6** needed no change (the simulator already fuses). Every perf-sensitive
+step was decided by A/B benchmark on the harness rather than implemented blind — which is
+how P5 was caught and P4's expected SoA advantage was found not to hold on MLX 0.31.
 
 ---
 
