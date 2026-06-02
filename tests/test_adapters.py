@@ -1,7 +1,7 @@
 """Round-trip tests for Cirq and Qiskit adapters. Skipped when extras are absent."""
+
 import numpy as np
 import pytest
-
 
 # ── Cirq ──────────────────────────────────────────────────────────────────────
 
@@ -13,11 +13,13 @@ def test_cirq_bell():
     from macquerel.simulator import Simulator
 
     q0, q1 = cirq.LineQubit.range(2)
-    cirq_circuit = cirq.Circuit([
-        cirq.H(q0),
-        cirq.CNOT(q0, q1),
-        cirq.measure(q0, q1, key="result"),
-    ])
+    cirq_circuit = cirq.Circuit(
+        [
+            cirq.H(q0),
+            cirq.CNOT(q0, q1),
+            cirq.measure(q0, q1, key="result"),
+        ]
+    )
 
     qc = from_cirq(cirq_circuit)
     assert qc.n_qubits == 2
@@ -30,7 +32,6 @@ def test_cirq_bell():
 def test_cirq_unsupported_gate():
     from macquerel.adapters.cirq import from_cirq
 
-    q = cirq.LineQubit(0)
     # CCX (Toffoli) is not in the supported set
     cirq_circuit = cirq.Circuit([cirq.CCX(*cirq.LineQubit.range(3))])
     with pytest.raises(NotImplementedError):
@@ -44,6 +45,7 @@ qiskit = pytest.importorskip("qiskit")
 
 def test_qiskit_bell():
     from qiskit import QuantumCircuit
+
     from macquerel.adapters.qiskit import from_qiskit
     from macquerel.simulator import Simulator
 
@@ -62,6 +64,7 @@ def test_qiskit_bell():
 
 def test_qiskit_unsupported_gate():
     from qiskit import QuantumCircuit
+
     from macquerel.adapters.qiskit import from_qiskit
 
     qk_circuit = QuantumCircuit(3)

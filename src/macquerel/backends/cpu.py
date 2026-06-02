@@ -103,7 +103,7 @@ class CPUBackend:
             outcomes.append(outcome)
 
             if collapse:
-                idx = [slice(None)] * n
+                idx: list = [slice(None)] * n
                 idx[q] = 1 - outcome
                 state[tuple(idx)] = 0.0
                 norm = np.sqrt(np.sum(np.abs(state) ** 2))
@@ -147,7 +147,9 @@ class CPUBackend:
         return np.sum(probs, axis=sum_axes).reshape(-1)
 
     def expectation_pauli(self, sv: np.ndarray, pauli_strings) -> np.ndarray:
-        from macquerel.gates import X, Y, Z, I as I_gate
+        from macquerel.gates import I as I_gate
+        from macquerel.gates import X, Y, Z
+
         PAULI_MAP = {"X": X(), "Y": Y(), "Z": Z(), "I": I_gate()}
         results = []
         for coeff, terms in pauli_strings:

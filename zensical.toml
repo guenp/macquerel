@@ -1,0 +1,54 @@
+# Documentation built with Zensical — https://zensical.org
+
+[project]
+site_name = "macquerel"
+site_description = "Quantum state-vector simulator for Apple Silicon"
+site_url = "https://guenp.github.io/macquerel/"
+copyright = "Copyright &copy; 2026 Guen Prawiroatmodjo"
+
+repo_url = "https://github.com/guenp/macquerel"
+repo_name = "GitHub"
+edit_uri = "edit/main/docs"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Getting Started" = "getting-started.md" },
+  { "Reference" = [
+    { "Overview" = "reference/index.md" },
+    { "API" = "reference/api.md" },
+  ] },
+  { "Design" = [
+    { "Design spec" = "design_spec.md" },
+    { "Implementation plan" = "plan.md" },
+  ] },
+]
+
+[project.theme]
+language = "en"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "indigo"
+accent = "teal"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "indigo"
+accent = "teal"
+toggle.icon = "lucide/moon-star"
+toggle.name = "Switch to light mode"
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+
+[project.markdown_extensions.pymdownx.superfences]
+
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true

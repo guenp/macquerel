@@ -1,10 +1,14 @@
 """Converter from qiskit.QuantumCircuit to macquerel.Circuit."""
+
 from __future__ import annotations
 
-import math
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from macquerel.circuit import Circuit
 
 
-def from_qiskit(qiskit_circuit) -> "macquerel.Circuit":
+def from_qiskit(qiskit_circuit) -> Circuit:
     """Convert a qiskit.QuantumCircuit to a macquerel.Circuit.
 
     Supports h, x, y, z, s, t, rx, ry, rz, cx, cz, swap, cp, p, and measure operations.
@@ -13,7 +17,7 @@ def from_qiskit(qiskit_circuit) -> "macquerel.Circuit":
     Requires qiskit to be installed.
     """
     try:
-        import qiskit  # noqa: F401
+        import qiskit  # noqa: F401  # ty: ignore[unresolved-import]
     except ImportError as e:
         raise ImportError(
             "qiskit is required for from_qiskit(). Install with: pip install qiskit"
@@ -24,13 +28,17 @@ def from_qiskit(qiskit_circuit) -> "macquerel.Circuit":
     n = qiskit_circuit.num_qubits
     qc = macquerel.Circuit(n)
 
+    # qiskit's measure_all() emits one single-qubit `measure` per qubit; collect
+    # them into a single measurement so outcomes are full n-bit strings.
+    measured: list[int] = []
+
     for instruction in qiskit_circuit.data:
         op = instruction.operation
         qubits = [qiskit_circuit.find_bit(q).index for q in instruction.qubits]
         name = op.name.lower()
 
         if name == "measure":
-            qc.measure(qubits)
+            measured.extend(qubits)
         elif name == "h":
             qc.h(qubits[0])
         elif name == "x":
@@ -63,8 +71,10 @@ def from_qiskit(qiskit_circuit) -> "macquerel.Circuit":
             pass  # barriers are purely visual, ignore
         else:
             raise NotImplementedError(
-                f"Unsupported qiskit gate: '{op.name}'. "
-                "Decompose it to supported primitives first."
+                f"Unsupported qiskit gate: '{op.name}'. Decompose it to supported primitives first."
             )
+
+    if measured:
+        qc.measure(sorted(set(measured)))
 
     return qc

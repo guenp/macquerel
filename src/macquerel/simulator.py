@@ -8,7 +8,8 @@ from macquerel.circuit import Circuit, Gate, MeasureOp
 from macquerel.compiler import fuse_gates
 
 try:
-    import mlx.core as mx  # noqa: F401
+    import mlx.core as mx  # noqa: F401  # ty: ignore[unresolved-import]
+
     _MLX_AVAILABLE = True
 except ImportError:
     _MLX_AVAILABLE = False
@@ -40,16 +41,17 @@ def _select_backend(n_qubits: int) -> str:
 def _make_backend(name: str, dtype: str, seed: int | None = None):
     if name == "cpu":
         from macquerel.backends.cpu import CPUBackend
+
         return CPUBackend(seed=seed)
     if name == "mlx":
         from macquerel.backends.mlx_backend import MLXBackend
+
         return MLXBackend(seed=seed)
     if name == "metal":
         from macquerel.backends.metal_backend import MetalBackend
+
         return MetalBackend(seed=seed)
-    raise ValueError(
-        f"Unknown backend: {name!r}. Choose 'cpu', 'mlx', 'metal', or 'auto'."
-    )
+    raise ValueError(f"Unknown backend: {name!r}. Choose 'cpu', 'mlx', 'metal', or 'auto'.")
 
 
 class Simulator:
@@ -78,8 +80,6 @@ class Simulator:
         for op in fused.ops:
             if isinstance(op, Gate):
                 sv = backend.apply_matrix(sv, op.matrix, op.targets, op.controls or None)
-            elif isinstance(op, MeasureOp):
-                backend.measure(sv, op.qubits, collapse=True)
         return backend.to_numpy(sv)
 
     def run(self, circuit: Circuit, shots: int = 1000) -> Counter:
@@ -107,7 +107,7 @@ class Simulator:
         sv = backend.allocate(circuit.n_qubits, self._np_dtype)
         outcome_bitstrings: list[Counter] = []
 
-        for gates, meas_qubits in zip(segments, measurements):
+        for gates, meas_qubits in zip(segments, measurements, strict=True):
             for gate in gates:
                 sv = backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
             counts = backend.sample(sv, meas_qubits, shots)

@@ -53,7 +53,7 @@ def test_run_returns_counter():
 
     assert isinstance(result, Counter)
     assert sum(result.values()) == 200
-    assert all(len(k) == 2 for k in result.keys())
+    assert all(len(k) == 2 for k in result)
 
 
 def test_all_gate_methods():

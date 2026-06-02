@@ -1,10 +1,9 @@
 import numpy as np
-import pytest
 
+import macquerel.gates as g
+from macquerel.backends.cpu import CPUBackend
 from macquerel.circuit import Circuit, Gate, MeasureOp
 from macquerel.compiler import fuse_gates, remap_qubits
-from macquerel.backends.cpu import CPUBackend
-import macquerel.gates as g
 
 
 def _run_statevector(circuit: Circuit) -> np.ndarray:
@@ -27,8 +26,9 @@ def test_fusion_preserves_statevector():
     fused = fuse_gates(qc)
     sv_fused = _run_statevector(fused)
 
-    assert np.allclose(sv_unfused, sv_fused, atol=1e-5), \
+    assert np.allclose(sv_unfused, sv_fused, atol=1e-5), (
         f"max diff: {np.max(np.abs(sv_unfused - sv_fused))}"
+    )
 
 
 def test_single_gate_unchanged():
@@ -70,8 +70,9 @@ def test_fused_matrix_unitarity():
     for op in fused.ops:
         if isinstance(op, Gate):
             m = op.matrix.astype(np.complex128)
-            assert np.allclose(m @ m.conj().T, np.eye(len(m)), atol=1e-5), \
+            assert np.allclose(m @ m.conj().T, np.eye(len(m)), atol=1e-5), (
                 f"Fused gate {op.name} is not unitary"
+            )
 
 
 def test_fusion_limit():
@@ -121,6 +122,7 @@ def test_remap_preserves_distribution():
 
     # Recover the permutation from remap_qubits to invert bitstring labels
     from collections import Counter as _Counter
+
     freq: _Counter[int] = _Counter()
     for op in qc.ops:
         if isinstance(op, Gate):

@@ -5,18 +5,19 @@ is present (i.e. Apple Silicon), like the MLX tests. The Metal backend reaches
 the >31-qubit regime via 64-bit GPU indexing; here we pin its gate semantics
 against the NumPy reference on small circuits where a full readback is cheap.
 """
+
 import numpy as np
 import pytest
 
 pytest.importorskip("Metal")
 
-from macquerel.backends.metal_backend import MetalBackend, _METAL_AVAILABLE
+from macquerel.backends.metal_backend import _METAL_AVAILABLE, MetalBackend
 
 if not _METAL_AVAILABLE:  # importable but no GPU device (e.g. headless CI)
     pytest.skip("no Metal device available", allow_module_level=True)
 
-from macquerel.backends.cpu import CPUBackend
 import macquerel.gates as g
+from macquerel.backends.cpu import CPUBackend
 
 
 @pytest.fixture
@@ -50,22 +51,23 @@ def _circuit_gates():
         # explicit controlled gate (control mask path)
         [(g.H(), [0]), (g.X(), [1]), (g.X(), [2], [0, 1])],
         # mixed multi-qubit, non-adjacent targets
-        [(g.H(), [0]), (g.Rx(0.3), [1]), (g.SWAP(), [0, 3]),
-         (g.Rz(0.7), [2]), (g.CNOT(), [1, 2])],
+        [(g.H(), [0]), (g.Rx(0.3), [1]), (g.SWAP(), [0, 3]), (g.Rz(0.7), [2]), (g.CNOT(), [1, 2])],
     ]
 
 
 @pytest.mark.parametrize("gate_seq", _circuit_gates())
 def test_differential(cpu, metal, gate_seq):
-    n_qubits = max(q for item in gate_seq for q in (item[1] + (item[2] if len(item) > 2 else []))) + 1
+    n_qubits = (
+        max(q for item in gate_seq for q in (item[1] + (item[2] if len(item) > 2 else []))) + 1
+    )
     sv_cpu = _apply_gates(cpu, cpu.allocate(n_qubits), gate_seq)
     sv_metal = metal.to_numpy(_apply_gates(metal, metal.allocate(n_qubits), gate_seq))
-    assert np.allclose(sv_cpu, sv_metal, atol=1e-5), \
+    assert np.allclose(sv_cpu, sv_metal, atol=1e-5), (
         f"max diff: {np.max(np.abs(sv_cpu - sv_metal))}"
+    )
 
 
-_G1 = [g.H, g.X, g.Z, g.S, g.T,
-       lambda: g.Rz(0.7), lambda: g.Rx(0.4), lambda: g.Ry(1.1)]
+_G1 = [g.H, g.X, g.Z, g.S, g.T, lambda: g.Rz(0.7), lambda: g.Rx(0.4), lambda: g.Ry(1.1)]
 _G2 = [g.CNOT, g.CZ, g.SWAP]
 
 
@@ -88,8 +90,9 @@ def test_fuzz_differential(cpu, metal, seed):
     ops = _random_ops(n, 40, rng)
     sv_cpu = cpu.to_numpy(_apply_gates(cpu, cpu.allocate(n), ops))
     sv_metal = metal.to_numpy(_apply_gates(metal, metal.allocate(n), ops))
-    assert np.allclose(sv_cpu, sv_metal, atol=1e-5), \
+    assert np.allclose(sv_cpu, sv_metal, atol=1e-5), (
         f"n={n} seed={seed} max diff: {np.max(np.abs(sv_cpu - sv_metal))}"
+    )
 
 
 def test_bell_state(metal):

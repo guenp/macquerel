@@ -11,6 +11,7 @@ Usage:
     uv run python tests/benchmarks/bench_backends.py --qubits 10 14 18 22 --depth 30 --reps 5
     uv run python tests/benchmarks/bench_backends.py --json results/run1.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -59,7 +60,7 @@ def _run(backend, n: int, ops: list[tuple]) -> float:
 
 def _warmup(backend, n: int, ops: list[tuple]) -> None:
     sv = backend.allocate(n)
-    for mat, targets in ops[:min(10, len(ops))]:
+    for mat, targets in ops[: min(10, len(ops))]:
         sv = backend.apply_matrix(sv, mat, targets)
     _flush(backend, sv)
 
@@ -81,7 +82,10 @@ def _print_row(r: dict, has_mlx: bool) -> None:
             tag = "  MLX faster" if speedup > 1.5 else ("  CPU faster" if speedup < 0.67 else "")
         mlx_str = f"{r['mlx_ms']:>10.1f}" if r["mlx_ms"] is not None else f"{'n/a':>10}"
         sp_str = f"{speedup:>8.2f}x" if speedup is not None else f"{'n/a':>9}"
-        print(f"{r['n_qubits']:>6}  {r['depth']:>5}  {r['cpu_ms']:>10.1f}  {mlx_str}  {sp_str}{tag}", flush=True)
+        print(
+            f"{r['n_qubits']:>6}  {r['depth']:>5}  {r['cpu_ms']:>10.1f}  {mlx_str}  {sp_str}{tag}",
+            flush=True,
+        )
     else:
         print(f"{r['n_qubits']:>6}  {r['depth']:>5}  {r['cpu_ms']:>10.1f}", flush=True)
 
@@ -94,6 +98,7 @@ def benchmark(
 ) -> list[dict]:
     try:
         from macquerel.backends.mlx_backend import MLXBackend
+
         mlx_backend = MLXBackend()
         has_mlx = True
     except ImportError:
@@ -162,28 +167,38 @@ def _ascii_chart(results: list[dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="CPU vs MLX backend benchmark")
     parser.add_argument(
-        "--qubits", nargs="+", type=int,
+        "--qubits",
+        nargs="+",
+        type=int,
         default=[10, 14, 16, 18, 20, 22, 24],
         help="qubit counts to benchmark (default: 10 14 16 18 20 22 24)",
     )
     parser.add_argument(
-        "--depth", type=int, default=50,
+        "--depth",
+        type=int,
+        default=50,
         help="circuit depth — number of gates per circuit (default: 50)",
     )
     parser.add_argument(
-        "--reps", type=int, default=3,
+        "--reps",
+        type=int,
+        default=3,
         help="repetitions per configuration; minimum time is reported (default: 3)",
     )
     parser.add_argument(
-        "--seed", type=int, default=42,
+        "--seed",
+        type=int,
+        default=42,
         help="RNG seed for reproducible circuits (default: 42)",
     )
     parser.add_argument(
-        "--json", metavar="FILE",
+        "--json",
+        metavar="FILE",
         help="write results to a JSON file for comparison or plotting",
     )
     parser.add_argument(
-        "--no-chart", action="store_true",
+        "--no-chart",
+        action="store_true",
         help="suppress the ASCII bar chart",
     )
     args = parser.parse_args()

@@ -1,12 +1,13 @@
 """Differential tests: every CPU backend circuit must agree with MLX backend to 1e-5."""
+
 import numpy as np
 import pytest
 
 mlx = pytest.importorskip("mlx.core")
 
+import macquerel.gates as g
 from macquerel.backends.cpu import CPUBackend
 from macquerel.backends.mlx_backend import MLXBackend
-import macquerel.gates as g
 
 
 @pytest.fixture
@@ -48,8 +49,7 @@ def test_differential(cpu, mlx_backend, gate_seq):
     sv_mlx = _apply_gates(mlx_backend, mlx_backend.allocate(n_qubits), gate_seq)
     sv_mlx = mlx_backend.to_numpy(sv_mlx)
 
-    assert np.allclose(sv_cpu, sv_mlx, atol=1e-5), \
-        f"max diff: {np.max(np.abs(sv_cpu - sv_mlx))}"
+    assert np.allclose(sv_cpu, sv_mlx, atol=1e-5), f"max diff: {np.max(np.abs(sv_cpu - sv_mlx))}"
 
 
 def test_bell_state(mlx_backend):

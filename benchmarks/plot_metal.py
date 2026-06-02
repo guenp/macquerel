@@ -7,6 +7,7 @@ ahead of MLX at 26-30q. Reads the JSON written by benchmarks/bench_metal.py.
 Usage:
     uv run python benchmarks/plot_metal.py benchmarks/data/<commit>-metal.json
 """
+
 from __future__ import annotations
 
 import json
@@ -46,8 +47,15 @@ def main() -> None:
     ax.axvspan(30.5, max(qs) + 0.5, color="#d62728", alpha=0.07)
     ax.axvline(30.5, color="#d62728", ls="--", lw=1, alpha=0.6)
     ymax = max(r["metal_ms"] for r in results if r["metal_ms"] is not None)
-    ax.text(31, ymax * 0.5, "Metal-only\n(MLX int32\nceiling: 30q)",
-            color="#d62728", fontsize=9, ha="center", va="center")
+    ax.text(
+        31,
+        ymax * 0.5,
+        "Metal-only\n(MLX int32\nceiling: 30q)",
+        color="#d62728",
+        fontsize=9,
+        ha="center",
+        va="center",
+    )
 
     ax.set_yscale("log")
     ax.set_xlabel("qubits")

@@ -1,17 +1,17 @@
 """Tests for Backend Protocol conformance and the new abs2sum / expectation_pauli methods."""
-import numpy as np
-import pytest
 
-from macquerel.backends import Backend, CPUBackend
-from macquerel.circuit import Circuit, Gate
+from macquerel.backends import Backend
 from macquerel.backends.cpu import CPUBackend
+from macquerel.circuit import Circuit, Gate
 
 
 def _ghz3_sv():
     """Statevector for 3-qubit GHZ state: (|000> + |111>) / sqrt(2)."""
     cpu = CPUBackend()
     qc = Circuit(3)
-    qc.h(0); qc.cx(0, 1); qc.cx(0, 2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.cx(0, 2)
     sv = cpu.allocate(3)
     for op in qc.ops:
         if isinstance(op, Gate):
@@ -28,16 +28,19 @@ def _plus_sv():
     cpu = CPUBackend()
     sv = cpu.allocate(1)
     import macquerel.gates as g
+
     return cpu.apply_matrix(sv, g.H(), [0])
 
 
 # --- Protocol conformance ---
+
 
 def test_cpu_backend_satisfies_protocol():
     assert isinstance(CPUBackend(), Backend)
 
 
 # --- abs2sum ---
+
 
 def test_abs2sum_ghz_qubit0():
     sv = _ghz3_sv()
@@ -66,6 +69,7 @@ def test_abs2sum_sums_to_one():
 
 
 # --- expectation_pauli ---
+
 
 def test_expectation_Z_on_zero():
     sv = _zero_sv(1)

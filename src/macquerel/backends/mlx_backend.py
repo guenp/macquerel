@@ -6,7 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 
 try:
-    import mlx.core as mx
+    import mlx.core as mx  # ty: ignore[unresolved-import]
+
     _MLX_AVAILABLE = True
 except ImportError:
     _MLX_AVAILABLE = False
@@ -15,7 +16,8 @@ except ImportError:
 @dataclass
 class MLXState:
     """Statevector held as a single complex64 mx.array (P4: native complex storage)."""
-    data: "mx.array"  # shape (2**n,), complex64
+
+    data: mx.array  # shape (2**n,), complex64
     n_qubits: int
 
 
@@ -51,14 +53,14 @@ class MLXBackend:
         # rebuilding the scalar uint32 mask each loop iteration; the classify
         # cache avoids re-scanning identical gate matrices.
         self._one = mx.array(1, dtype=mx.uint32)
-        self._arange_cache: dict[int, "mx.array"] = {}
+        self._arange_cache: dict[int, mx.array] = {}
         self._classify_cache: dict[tuple, str] = {}
         # P8: compile the hot elementwise kernels so MLX fuses the gather +
         # arithmetic into one kernel and caches the trace per input shape.
         self._diag_kernel = mx.compile(_diag_phase_kernel)
         self._perm_kernel = mx.compile(_perm_gather_kernel)
 
-    def _arange(self, n: int) -> "mx.array":
+    def _arange(self, n: int) -> mx.array:
         """Cached, evaluated uint32 [0, 2**n) index vector (one per qubit count)."""
         a = self._arange_cache.get(n)
         if a is None:
@@ -73,6 +75,7 @@ class MLXBackend:
         kind = self._classify_cache.get(key)
         if kind is None:
             from macquerel.gates import classify
+
             kind = classify(mat)
             self._classify_cache[key] = kind
         return kind
@@ -105,7 +108,7 @@ class MLXBackend:
             return self._apply_permutation(sv, mat, targets)
         return self._apply_general(sv, mat, targets, controls)
 
-    def _gate_index(self, targets: list[int], n: int) -> "mx.array":
+    def _gate_index(self, targets: list[int], n: int) -> mx.array:
         """Pack the k target bits of every basis index into a gate-row index."""
         k = len(targets)
         indices = self._arange(n)
@@ -170,11 +173,11 @@ class MLXBackend:
 
     def _dense_apply(
         self,
-        data: "mx.array",
+        data: mx.array,
         mat: np.ndarray,
         targets: list[int],
         n: int,
-    ) -> "mx.array":
+    ) -> mx.array:
         """Apply a dense k-qubit matrix to `targets` over the full state.
 
         Single complex64 tensordot (vs four real tensordots in the SoA layout),
@@ -246,6 +249,7 @@ class MLXBackend:
         collapse: bool = True,
     ) -> list[int]:
         from macquerel.backends.cpu import CPUBackend
+
         sv_np = self.to_numpy(sv)
         outcomes = CPUBackend().measure(sv_np, qubits, collapse=collapse)
         if collapse:
@@ -294,13 +298,16 @@ class MLXBackend:
         return np.sum(probs, axis=sum_axes).reshape(-1)
 
     def expectation_pauli(self, sv: MLXState, pauli_strings) -> np.ndarray:
-        from macquerel.gates import X, Y, Z, I as I_gate
+        from macquerel.gates import I as I_gate
+        from macquerel.gates import X, Y, Z
+
         PAULI_MAP = {"X": X(), "Y": Y(), "Z": Z(), "I": I_gate()}
         sv_np = self.to_numpy(sv)
         results = []
         for coeff, terms in pauli_strings:
             psi_p = sv_np.copy()
             from macquerel.backends.cpu import CPUBackend
+
             cpu = CPUBackend()
             for pauli_char, qubit in terms:
                 psi_p = cpu.apply_matrix(psi_p, PAULI_MAP[pauli_char], [qubit])

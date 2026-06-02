@@ -21,4 +21,4 @@ class Backend(Protocol):
     def abs2sum(self, sv, qubits: list[int]) -> np.ndarray: ...
 
 
-__all__ = ["Backend", "CPUBackend", "MetalBackend", "MLXBackend"]
+__all__ = ["Backend", "CPUBackend", "MLXBackend", "MetalBackend"]

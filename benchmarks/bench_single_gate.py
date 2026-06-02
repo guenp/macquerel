@@ -9,6 +9,7 @@ Usage:
     uv run python benchmarks/bench_single_gate.py --qubits 16 20 24 --reps 5
     uv run python benchmarks/bench_single_gate.py --json results/single_gate.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -55,6 +56,7 @@ def _gbps(n: int, k: int, elapsed_s: float) -> float:
 def benchmark(qubit_counts: list[int], reps: int) -> list[dict]:
     try:
         from macquerel.backends.mlx_backend import MLXBackend
+
         backends = {"cpu": CPUBackend(), "mlx": MLXBackend()}
     except ImportError:
         backends = {"cpu": CPUBackend()}

@@ -5,9 +5,22 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from macquerel.gates import (
+    CNOT,
+    CP,
+    CZ,
+    SWAP,
     GateKind,
-    H, I, X, Y, Z, S, T, Rx, Ry, Rz, P,
-    CNOT, CZ, SWAP, CP,
+    H,
+    I,
+    P,
+    Rx,
+    Ry,
+    Rz,
+    S,
+    T,
+    X,
+    Y,
+    Z,
     classify,
 )
 
@@ -42,91 +55,95 @@ class Circuit:
                 raise ValueError(f"Duplicate qubit index {q}")
             seen.add(q)
 
-    def _add(self, name: str, matrix: np.ndarray, targets: list[int], controls: list[int] | None = None) -> None:
+    def _add(
+        self, name: str, matrix: np.ndarray, targets: list[int], controls: list[int] | None = None
+    ) -> None:
         ctrls = controls or []
         mat = matrix.astype(np.complex64)
-        self.ops.append(Gate(name=name, matrix=mat, targets=targets, controls=ctrls, kind=classify(mat)))
+        self.ops.append(
+            Gate(name=name, matrix=mat, targets=targets, controls=ctrls, kind=classify(mat))
+        )
 
-    def i(self, qubit: int) -> "Circuit":
+    def i(self, qubit: int) -> Circuit:
         self._check(qubit)
         self._add("I", I(), [qubit])
         return self
 
-    def h(self, qubit: int) -> "Circuit":
+    def h(self, qubit: int) -> Circuit:
         self._check(qubit)
         self._add("H", H(), [qubit])
         return self
 
-    def x(self, qubit: int) -> "Circuit":
+    def x(self, qubit: int) -> Circuit:
         self._check(qubit)
         self._add("X", X(), [qubit])
         return self
 
-    def y(self, qubit: int) -> "Circuit":
+    def y(self, qubit: int) -> Circuit:
         self._check(qubit)
         self._add("Y", Y(), [qubit])
         return self
 
-    def z(self, qubit: int) -> "Circuit":
+    def z(self, qubit: int) -> Circuit:
         self._check(qubit)
         self._add("Z", Z(), [qubit])
         return self
 
-    def s(self, qubit: int) -> "Circuit":
+    def s(self, qubit: int) -> Circuit:
         self._check(qubit)
         self._add("S", S(), [qubit])
         return self
 
-    def t(self, qubit: int) -> "Circuit":
+    def t(self, qubit: int) -> Circuit:
         self._check(qubit)
         self._add("T", T(), [qubit])
         return self
 
-    def rx(self, qubit: int, theta: float) -> "Circuit":
+    def rx(self, qubit: int, theta: float) -> Circuit:
         self._check(qubit)
         self._add("Rx", Rx(theta), [qubit])
         return self
 
-    def ry(self, qubit: int, theta: float) -> "Circuit":
+    def ry(self, qubit: int, theta: float) -> Circuit:
         self._check(qubit)
         self._add("Ry", Ry(theta), [qubit])
         return self
 
-    def rz(self, qubit: int, theta: float) -> "Circuit":
+    def rz(self, qubit: int, theta: float) -> Circuit:
         self._check(qubit)
         self._add("Rz", Rz(theta), [qubit])
         return self
 
-    def p(self, qubit: int, lam: float) -> "Circuit":
+    def p(self, qubit: int, lam: float) -> Circuit:
         self._check(qubit)
         self._add("P", P(lam), [qubit])
         return self
 
-    def cx(self, control: int, target: int) -> "Circuit":
+    def cx(self, control: int, target: int) -> Circuit:
         self._check(control, target)
         self._add("CX", CNOT(), [control, target])
         return self
 
-    def cz(self, control: int, target: int) -> "Circuit":
+    def cz(self, control: int, target: int) -> Circuit:
         self._check(control, target)
         self._add("CZ", CZ(), [control, target])
         return self
 
-    def swap(self, q0: int, q1: int) -> "Circuit":
+    def swap(self, q0: int, q1: int) -> Circuit:
         self._check(q0, q1)
         self._add("SWAP", SWAP(), [q0, q1])
         return self
 
-    def cp(self, control: int, target: int, lam: float) -> "Circuit":
+    def cp(self, control: int, target: int, lam: float) -> Circuit:
         self._check(control, target)
         self._add("CP", CP(lam), [control, target])
         return self
 
-    def measure(self, qubits: list[int]) -> "Circuit":
+    def measure(self, qubits: list[int]) -> Circuit:
         self._check(*qubits)
         self.ops.append(MeasureOp(qubits=list(qubits)))
         return self
 
-    def measure_all(self) -> "Circuit":
+    def measure_all(self) -> Circuit:
         self.ops.append(MeasureOp(qubits=list(range(self.n_qubits))))
         return self

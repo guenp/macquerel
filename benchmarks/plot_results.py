@@ -13,6 +13,7 @@ Usage:
     uv run python benchmarks/plot_results.py
     uv run python benchmarks/plot_results.py --data-dir benchmarks/data --out benchmarks/data/benchmark.png
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,7 +24,7 @@ import matplotlib.pyplot as plt
 
 
 def _load(path: Path) -> dict:
-    data = json.load(open(path))
+    data = json.loads(path.read_text())
     results = sorted(data["results"], key=lambda r: r["n_qubits"])
     commit, _, label = path.stem.partition("-")
     return {"commit": commit, "label": label or path.stem, "results": results}

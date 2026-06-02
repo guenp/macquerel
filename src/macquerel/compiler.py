@@ -28,8 +28,6 @@ def _compose_gates(group: list[Gate]) -> Gate:
 
     for g in group:
         # Embed g.matrix into the full fused space
-        all_qubits = g.targets + g.controls
-        gate_qubits = [q for q in qubit_set if q in all_qubits]
         # build full gate matrix (may need to embed controls)
         if g.controls:
             # already a 2-qubit (or larger) matrix including control semantics
@@ -54,7 +52,6 @@ def _embed(matrix: np.ndarray, gate_qubits: list[int], full_qubits: list[int]) -
 
     # Build the full unitary via tensor product with identity on remaining qubits
     # We use the standard trick: write the full unitary as a tensor, set entries.
-    full_mat = np.eye(dim_full, dtype=np.complex128)
     gate_mat = matrix.astype(np.complex128)
 
     # Map gate_qubits to their positions within full_qubits
@@ -64,8 +61,7 @@ def _embed(matrix: np.ndarray, gate_qubits: list[int], full_qubits: list[int]) -
     # full_mat[i, j] = gate_mat[i_gate, j_gate] if gate bits match, else delta
     # We use a direct construction: tensor reshape approach
 
-    # Reshape full_mat to (2,)*k_full x (2,)*k_full
-    full_t = full_mat.reshape((2,) * (2 * k_full))
+    # Reshape gate_mat to (2,)*k_gate x (2,)*k_gate
     gate_t = gate_mat.reshape((2,) * (2 * k_gate))
 
     # Build output tensor
@@ -85,11 +81,11 @@ def _embed(matrix: np.ndarray, gate_qubits: list[int], full_qubits: list[int]) -
                 # Build full row/col index tuples
                 row_idx = [None] * k_full
                 col_idx = [None] * k_full
-                for pos, bit in zip(gate_pos, gi_bits):
+                for pos, bit in zip(gate_pos, gi_bits, strict=True):
                     row_idx[pos] = bit
-                for pos, bit in zip(gate_pos, gj_bits):
+                for pos, bit in zip(gate_pos, gj_bits, strict=True):
                     col_idx[pos] = bit
-                for pos, bit in zip(non_gate_pos, env_bits):
+                for pos, bit in zip(non_gate_pos, env_bits, strict=True):
                     row_idx[pos] = bit
                     col_idx[pos] = bit
                 full_row = tuple(row_idx) + tuple(col_idx)
@@ -160,13 +156,15 @@ def remap_qubits(circuit: Circuit) -> Circuit:
     result = Circuit(circuit.n_qubits)
     for op in circuit.ops:
         if isinstance(op, Gate):
-            result.ops.append(Gate(
-                name=op.name,
-                matrix=op.matrix,
-                targets=[perm[q] for q in op.targets],
-                controls=[perm[q] for q in op.controls],
-                kind=op.kind,
-            ))
+            result.ops.append(
+                Gate(
+                    name=op.name,
+                    matrix=op.matrix,
+                    targets=[perm[q] for q in op.targets],
+                    controls=[perm[q] for q in op.controls],
+                    kind=op.kind,
+                )
+            )
         elif isinstance(op, MeasureOp):
             result.ops.append(MeasureOp(qubits=[perm[q] for q in op.qubits]))
     return result

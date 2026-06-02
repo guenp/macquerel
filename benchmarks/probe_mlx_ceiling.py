@@ -7,6 +7,7 @@ a gather (permutation path — the op flagged by MLX issue #3327), and a readbac
 Each qubit count is run in its own subprocess so an MLX abort/overflow can't take
 down the driver. Usage:  python benchmarks/probe_mlx_ceiling.py 29 30 31 32
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -67,7 +68,8 @@ def main() -> None:
         print(f"\n===== probing n={n} =====", flush=True)
         proc = subprocess.run(
             [sys.executable, "-c", CHILD, str(n)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         print(proc.stdout, end="")
         if proc.stderr.strip():

@@ -1,11 +1,12 @@
 """Edge case tests."""
+
 import numpy as np
 import pytest
 
-from macquerel.circuit import Circuit, Gate
-from macquerel.simulator import Simulator
-from macquerel.backends.cpu import CPUBackend
 import macquerel.gates as g
+from macquerel.backends.cpu import CPUBackend
+from macquerel.circuit import Circuit
+from macquerel.simulator import Simulator
 
 
 def test_single_qubit_circuit():

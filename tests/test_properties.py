@@ -1,11 +1,11 @@
 """Property-based tests: norm preservation and fusion equivalence."""
-import numpy as np
-import pytest
 
+import numpy as np
+
+import macquerel.gates as g
+from macquerel.backends.cpu import CPUBackend
 from macquerel.circuit import Circuit
 from macquerel.compiler import fuse_gates
-from macquerel.backends.cpu import CPUBackend
-import macquerel.gates as g
 
 GATE_FACTORIES = [
     lambda: (g.H(), [0]),
@@ -32,21 +32,23 @@ def _random_circuit(n_qubits: int, depth: int, rng: np.random.Generator) -> Circ
             factory = TWO_QUBIT_FACTORIES[rng.integers(0, len(TWO_QUBIT_FACTORIES))]
             matrix, targets = factory(pair)
             from macquerel.circuit import Gate
-            qc.ops.append(Gate(
-                name="rand", matrix=matrix.astype(np.complex64),
-                targets=targets, controls=[]
-            ))
+
+            qc.ops.append(
+                Gate(name="rand", matrix=matrix.astype(np.complex64), targets=targets, controls=[])
+            )
         else:
             q = int(rng.integers(0, n_qubits))
             theta = float(rng.uniform(0, 2 * np.pi))
             matrix = g.Rz(theta)
-            from macquerel.circuit import Gate  # noqa: F811
+            from macquerel.circuit import Gate
+
             qc.ops.append(Gate(name="Rz", matrix=matrix, targets=[q], controls=[]))
     return qc
 
 
 def _run_circuit(qc: Circuit) -> np.ndarray:
     from macquerel.circuit import Gate
+
     cpu = CPUBackend()
     sv = cpu.allocate(qc.n_qubits)
     for op in qc.ops:
@@ -63,6 +65,7 @@ def test_norm_preservation_random():
         qc = _random_circuit(n, depth, rng)
 
         from macquerel.circuit import Gate
+
         cpu = CPUBackend()
         sv = cpu.allocate(n)
         for op in qc.ops:
@@ -83,5 +86,6 @@ def test_fusion_equivalence_random():
         fused = fuse_gates(qc)
         sv_fused = _run_circuit(fused)
 
-        assert np.allclose(sv_unfused, sv_fused, atol=1e-5), \
+        assert np.allclose(sv_unfused, sv_fused, atol=1e-5), (
             f"fusion broke circuit: max diff {np.max(np.abs(sv_unfused - sv_fused))}"
+        )

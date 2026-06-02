@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from macquerel.backends.cpu import CPUBackend
 import macquerel.gates as g
+from macquerel.backends.cpu import CPUBackend
 
 
 @pytest.fixture

@@ -1,11 +1,12 @@
 """Known-answer circuit tests."""
+
 import numpy as np
 import pytest
 
+import macquerel.gates as g
+from macquerel.backends.cpu import CPUBackend
 from macquerel.circuit import Circuit
 from macquerel.simulator import Simulator
-from macquerel.backends.cpu import CPUBackend
-import macquerel.gates as g
 
 
 @pytest.fixture

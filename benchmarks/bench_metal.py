@@ -10,6 +10,7 @@ each backend only where it is viable and records per-backend circuit time.
 Usage:
     uv run python benchmarks/bench_metal.py --json benchmarks/data/<commit>-metal.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -70,11 +71,13 @@ def _run(backend, n, ops):
 def benchmark(qubit_counts, depth, reps, seed=42):
     try:
         from macquerel.backends.mlx_backend import MLXBackend
+
         mlx = MLXBackend()
     except ImportError:
         mlx = None
     try:
         from macquerel.backends.metal_backend import MetalBackend
+
         metal = MetalBackend()
     except ImportError:
         metal = None
@@ -92,8 +95,11 @@ def benchmark(qubit_counts, depth, reps, seed=42):
         n_reps = reps if n <= 24 else 1
 
         cpu_ms = min(_run(cpu, n, ops) for _ in range(n_reps)) * 1000 if n <= _CPU_MAX else None
-        mlx_ms = (min(_run(mlx, n, ops) for _ in range(n_reps)) * 1000
-                  if mlx is not None and n <= _MLX_MAX else None)
+        mlx_ms = (
+            min(_run(mlx, n, ops) for _ in range(n_reps)) * 1000
+            if mlx is not None and n <= _MLX_MAX
+            else None
+        )
 
         # Past MLX's range, release its cached arange index (up to ~4 GiB at
         # 30q) + Metal cache pool so the 31-33q in-place buffers (16/32/64 GiB)
@@ -102,6 +108,7 @@ def benchmark(qubit_counts, depth, reps, seed=42):
             mlx = None
             try:
                 import mlx.core as _mx
+
                 _mx.clear_cache()
             except Exception:
                 pass
@@ -110,7 +117,9 @@ def benchmark(qubit_counts, depth, reps, seed=42):
         metal_ms = min(_run(metal, n, ops) for _ in range(n_reps)) * 1000 if metal else None
 
         row = {
-            "n_qubits": n, "depth": depth, "reps": n_reps,
+            "n_qubits": n,
+            "depth": depth,
+            "reps": n_reps,
             "cpu_ms": round(cpu_ms, 3) if cpu_ms is not None else None,
             "mlx_ms": round(mlx_ms, 3) if mlx_ms is not None else None,
             "metal_ms": round(metal_ms, 3) if metal_ms is not None else None,
@@ -125,8 +134,9 @@ def benchmark(qubit_counts, depth, reps, seed=42):
 
 def main():
     p = argparse.ArgumentParser(description="CPU vs MLX vs Metal backend benchmark")
-    p.add_argument("--qubits", nargs="+", type=int,
-                   default=[16, 18, 20, 22, 24, 26, 28, 30, 31, 32, 33])
+    p.add_argument(
+        "--qubits", nargs="+", type=int, default=[16, 18, 20, 22, 24, 26, 28, 30, 31, 32, 33]
+    )
     p.add_argument("--depth", type=int, default=30)
     p.add_argument("--reps", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)

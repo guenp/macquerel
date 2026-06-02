@@ -20,6 +20,7 @@ identical to a NumPy ``complex64`` array (real, imag interleaved), so readback i
 a zero-copy view. Qubit ``q`` occupies bit ``n-1-q`` of the linear index (axis 0
 is the most-significant bit), matching the CPU/MLX backends.
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -28,7 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 
 try:
-    import Metal  # pyobjc-framework-Metal
+    import Metal  # pyobjc-framework-Metal  # ty: ignore[unresolved-import]
 
     _METAL_AVAILABLE = Metal.MTLCreateSystemDefaultDevice() is not None
 except Exception:  # pragma: no cover - import guard for non-Apple / no-GPU
@@ -166,7 +167,7 @@ class MetalBackend:
     def _view(self, sv: MetalState) -> np.ndarray:
         """Zero-copy, writable complex64 NumPy view over the buffer contents."""
         nbytes = (2**sv.n_qubits) * 8
-        mv = sv.buf.contents().as_buffer(nbytes)
+        mv = sv.buf.contents().as_buffer(nbytes)  # ty: ignore[unresolved-attribute]
         return np.frombuffer(mv, dtype=np.complex64)
 
     def _const(self, arr: np.ndarray):
@@ -198,9 +199,7 @@ class MetalBackend:
         for buf, idx in buffers:
             enc.setBuffer_offset_atIndex_(buf, 0, idx)
         for val, idx in scalars:
-            enc.setBytes_length_atIndex_(
-                np.array([val], dtype=np.uint32).tobytes(), 4, idx
-            )
+            enc.setBytes_length_atIndex_(np.array([val], dtype=np.uint32).tobytes(), 4, idx)
         enc.dispatchThreads_threadsPerThreadgroup_(
             Metal.MTLSizeMake(gx, gy, gz), Metal.MTLSizeMake(tg, 1, 1)
         )
@@ -212,9 +211,7 @@ class MetalBackend:
 
     def allocate(self, n_qubits: int, dtype=np.complex64) -> MetalState:
         nbytes = (2**n_qubits) * 8
-        buf = self._dev.newBufferWithLength_options_(
-            nbytes, Metal.MTLResourceStorageModeShared
-        )
+        buf = self._dev.newBufferWithLength_options_(nbytes, Metal.MTLResourceStorageModeShared)
         if buf is None:
             raise MemoryError(f"Metal buffer allocation failed for {n_qubits} qubits")
         state = MetalState(buf=buf, n_qubits=n_qubits)
@@ -335,7 +332,7 @@ def _cpu_measure(npsv, qubits, rng, *, collapse):
         outcome = 0 if total < 1e-15 else int(rng.choice([0, 1], p=[p0 / total, p1 / total]))
         outcomes.append(outcome)
         if collapse:
-            idx = [slice(None)] * n
+            idx: list = [slice(None)] * n
             idx[q] = 1 - outcome
             state[tuple(idx)] = 0.0
             norm = np.sqrt(np.sum(np.abs(state) ** 2))

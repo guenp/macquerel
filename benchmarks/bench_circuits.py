@@ -8,6 +8,7 @@ Usage:
     uv run python benchmarks/bench_circuits.py --qubits 16 20 24 --reps 3
     uv run python benchmarks/bench_circuits.py --json results/circuits.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,10 +18,10 @@ from pathlib import Path
 
 import numpy as np
 
+import macquerel.gates as g
+from macquerel.backends.cpu import CPUBackend
 from macquerel.circuit import Circuit
 from macquerel.compiler import fuse_gates
-from macquerel.backends.cpu import CPUBackend
-import macquerel.gates as g
 
 
 def _flush(backend, sv) -> None:
@@ -30,7 +31,8 @@ def _flush(backend, sv) -> None:
 
 def _run_circuit(backend, circuit: Circuit, max_fused_qubits: int = 4) -> float:
     fused = fuse_gates(circuit, max_fused_qubits=max_fused_qubits)
-    from macquerel.circuit import Gate, MeasureOp
+    from macquerel.circuit import Gate
+
     sv = backend.allocate(circuit.n_qubits)
     t0 = time.perf_counter()
     for op in fused.ops:
@@ -107,6 +109,7 @@ def _build_dense_layers(n: int, layers: int = 40, seed: int = 7) -> Circuit:
 def benchmark(qubit_counts: list[int], reps: int, depth: int) -> dict:
     try:
         from macquerel.backends.mlx_backend import MLXBackend
+
         backends = {"cpu": CPUBackend(), "mlx": MLXBackend()}
     except ImportError:
         backends = {"cpu": CPUBackend()}
@@ -145,8 +148,10 @@ def benchmark(qubit_counts: list[int], reps: int, depth: int) -> dict:
             print(f"  {n}q  QFT  fused_w={fw}...", end="\r", flush=True)
             times = [_run_circuit(qft_backend, qft, max_fused_qubits=fw) for _ in range(reps)]
             entry = {
-                "n_qubits": n, "circuit": "QFT",
-                "max_fused_qubits": fw, "cpu_ms": round(min(times) * 1000, 3),
+                "n_qubits": n,
+                "circuit": "QFT",
+                "max_fused_qubits": fw,
+                "cpu_ms": round(min(times) * 1000, 3),
             }
             results["fusion_sweep"].append(entry)
             print(f"{n:>8}  {fw:>7}  {entry['cpu_ms']:>10.1f}", flush=True)

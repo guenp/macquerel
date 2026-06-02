@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from typing import Literal
 
 import numpy as np
@@ -87,7 +88,6 @@ def controlled(U: np.ndarray) -> np.ndarray:
 
 
 def classify(matrix: np.ndarray) -> GateKind:
-    n = matrix.shape[0]
     atol = 1e-6
     # diagonal: off-diagonal entries all ~0
     off_diag = matrix.copy()
