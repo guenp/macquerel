@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import string
 from collections import Counter
 from dataclasses import dataclass
 
@@ -76,6 +77,7 @@ class MLXBackend:
         self._one = mx.array(1, dtype=mx.uint32)
         self._arange_cache: dict[int, "mx.array"] = {}
         self._classify_cache: dict[tuple, str] = {}
+        self._einsum_cache: dict[tuple, str] = {}
 
     def _arange(self, n: int) -> "mx.array":
         """Cached, evaluated uint32 [0, 2**n) index vector (one per qubit count)."""
@@ -228,8 +230,11 @@ class MLXBackend:
     ) -> tuple["mx.array", "mx.array"]:
         """Apply a dense k-qubit matrix to `targets` over the full state.
 
-        Returns flattened (real, imag) MLX arrays. Stays entirely on the GPU
-        via mx.tensordot — no numpy round-trip.
+        Returns flattened (real, imag) MLX arrays. Stays entirely on the GPU.
+        Uses a single einsum per real/imag product that contracts the gate's
+        input axes with the state's target axes and emits the result directly
+        in canonical qubit order (axis i -> qubit i) — avoiding the separate
+        full-2**n transpose that tensordot would otherwise require.
         """
         k = len(targets)
         mat_r = mx.array(mat.real.astype(np.float32)).reshape((2,) * (2 * k))
@@ -238,24 +243,40 @@ class MLXBackend:
         state_r = real.reshape((2,) * n)
         state_i = imag.reshape((2,) * n)
 
-        input_axes = list(range(k, 2 * k))
+        subs = self._einsum_subscripts(targets, n)
 
-        out_rr = mx.tensordot(mat_r, state_r, axes=[input_axes, targets])
-        out_ri = mx.tensordot(mat_r, state_i, axes=[input_axes, targets])
-        out_ir = mx.tensordot(mat_i, state_r, axes=[input_axes, targets])
-        out_ii = mx.tensordot(mat_i, state_i, axes=[input_axes, targets])
+        out_rr = mx.einsum(subs, mat_r, state_r)
+        out_ri = mx.einsum(subs, mat_r, state_i)
+        out_ir = mx.einsum(subs, mat_i, state_r)
+        out_ii = mx.einsum(subs, mat_i, state_i)
 
-        out_r = out_rr - out_ii
-        out_i = out_ri + out_ir
-
-        remaining = [i for i in range(n) if i not in targets]
-        dest = targets + remaining
-        inv_perm = [0] * n
-        for new_pos, old_pos in enumerate(dest):
-            inv_perm[old_pos] = new_pos
-        out_r = mx.transpose(out_r, inv_perm).reshape(-1)
-        out_i = mx.transpose(out_i, inv_perm).reshape(-1)
+        out_r = (out_rr - out_ii).reshape(-1)
+        out_i = (out_ri + out_ir).reshape(-1)
         return out_r, out_i
+
+    def _einsum_subscripts(self, targets: list[int], n: int) -> str:
+        """Build the einsum spec for applying a dense gate on `targets`.
+
+        The gate tensor has 2k axes (k output then k input); the input axes are
+        contracted with the state's target axes, and the output is emitted in
+        canonical qubit order so no post-transpose is needed. Cached per
+        (tuple(targets), n).
+        """
+        key = (tuple(targets), n)
+        subs = self._einsum_cache.get(key)
+        if subs is None:
+            k = len(targets)
+            labels = string.ascii_letters
+            state_labels = list(labels[:n])
+            out_labels = list(labels[n:n + k])  # fresh labels for gate output axes
+            mat_labels = out_labels + [state_labels[t] for t in targets]
+            result_labels = [
+                out_labels[targets.index(i)] if i in targets else state_labels[i]
+                for i in range(n)
+            ]
+            subs = f"{''.join(mat_labels)},{''.join(state_labels)}->{''.join(result_labels)}"
+            self._einsum_cache[key] = subs
+        return subs
 
     def _apply_controlled(
         self,
