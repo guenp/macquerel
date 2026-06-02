@@ -85,6 +85,25 @@ def _build_qaoa(n: int, layers: int = 3) -> Circuit:
     return qc
 
 
+def _build_dense_layers(n: int, layers: int = 40, seed: int = 7) -> Circuit:
+    """Dense parallel-friendly circuit: full rotation walls + brick-wall entanglers.
+
+    Every gate touches the whole 2**n state vector, so each op is a large,
+    parallelizable workload — ideal for GPU amortization on MLX.
+    """
+    rng = np.random.default_rng(seed)
+    qc = Circuit(n)
+    for d in range(layers):
+        # Rotation wall: a rotation on every qubit (each op spans all 2**n amps)
+        for q in range(n):
+            qc.ry(q, rng.uniform(0, 2 * np.pi))
+            qc.rz(q, rng.uniform(0, 2 * np.pi))
+        # Brick-wall CZ entangler (offset alternates each layer) -> fuses well
+        for q in range(d % 2, n - 1, 2):
+            qc.cz(q, q + 1)
+    return qc
+
+
 def benchmark(qubit_counts: list[int], reps: int, depth: int) -> dict:
     try:
         from macquerel.backends.mlx_backend import MLXBackend
@@ -104,6 +123,7 @@ def benchmark(qubit_counts: list[int], reps: int, depth: int) -> dict:
             "QFT": _build_qft(n),
             "random": _build_random(n, depth),
             "QAOA": _build_qaoa(n),
+            "dense": _build_dense_layers(n),
         }
         for circuit_name, circuit in circuits.items():
             row = {"n_qubits": n, "circuit": circuit_name}
