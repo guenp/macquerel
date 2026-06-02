@@ -1,0 +1,49 @@
+{
+  "config": {
+    "qubits": [
+      16,
+      18,
+      20,
+      22
+    ],
+    "depth": 50,
+    "reps": 9,
+    "seed": 42,
+    "json": "benchmarks/data/1eb61db-p4-complex64.json",
+    "no_chart": true
+  },
+  "results": [
+    {
+      "n_qubits": 16,
+      "depth": 50,
+      "reps": 9,
+      "cpu_ms": 3.744,
+      "mlx_ms": 1.414,
+      "speedup": 2.648
+    },
+    {
+      "n_qubits": 18,
+      "depth": 50,
+      "reps": 9,
+      "cpu_ms": 14.11,
+      "mlx_ms": 2.488,
+      "speedup": 5.671
+    },
+    {
+      "n_qubits": 20,
+      "depth": 50,
+      "reps": 9,
+      "cpu_ms": 50.935,
+      "mlx_ms": 10.865,
+      "speedup": 4.688
+    },
+    {
+      "n_qubits": 22,
+      "depth": 50,
+      "reps": 9,
+      "cpu_ms": 296.951,
+      "mlx_ms": 51.316,
+      "speedup": 5.787
+    }
+  ]
+}

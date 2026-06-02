@@ -1,19 +1,115 @@
-import unittest
-from src.simulator import Simulator, Circuit
+from collections import Counter
 
-class TestSimulator(unittest.TestCase):
-    def test_basic_simulation(self):
-        circuit = Circuit(2)
-        circuit.h(0)
-        circuit.cx(0, 1)
-        circuit.rz(1, 0.3)
-        circuit.measure_all()
+import numpy as np
 
-        sim = Simulator()
-        result = sim.run(circuit, shots=1000)
+from macquerel.circuit import Circuit
+from macquerel.simulator import Simulator
 
-        self.assertTrue(isinstance(result, dict))
-        self.assertTrue(all(isinstance(k, int) and isinstance(v, int) for k, v in result.items()))
 
-if __name__ == '__main__':
-    unittest.main()
+def test_basic_simulation():
+    circuit = Circuit(2)
+    circuit.h(0)
+    circuit.cx(0, 1)
+    circuit.rz(1, 0.3)
+    circuit.measure_all()
+
+    sim = Simulator(backend="cpu")
+    result = sim.run(circuit, shots=1000)
+
+    assert isinstance(result, Counter)
+    assert all(isinstance(k, str) for k in result)
+    assert all(isinstance(v, int) for v in result.values())
+    assert sum(result.values()) == 1000
+
+
+def test_statevector_bell():
+
+    circuit = Circuit(2)
+    circuit.h(0)
+    circuit.cx(0, 1)
+
+    sim = Simulator(backend="cpu")
+    sv = sim.statevector(circuit)
+
+    expected = np.array([1 / np.sqrt(2), 0, 0, 1 / np.sqrt(2)], dtype=np.complex64)
+    assert np.allclose(np.abs(sv), np.abs(expected), atol=1e-5)
+
+
+def test_statevector_ignores_measurements():
+    circuit = Circuit(2)
+    circuit.h(0)
+    circuit.cx(0, 1)
+    circuit.measure_all()
+
+    sim = Simulator(backend="cpu")
+    sv = sim.statevector(circuit)
+
+    expected = np.array([1 / np.sqrt(2), 0, 0, 1 / np.sqrt(2)], dtype=np.complex64)
+    assert np.allclose(np.abs(sv), np.abs(expected), atol=1e-5)
+
+
+def test_no_measurement_run():
+    circuit = Circuit(1)
+    circuit.h(0)
+
+    sim = Simulator(backend="cpu")
+    result = sim.run(circuit, shots=500)
+
+    assert isinstance(result, Counter)
+    assert sum(result.values()) == 500
+
+
+def test_seed_reproducibility():
+    qc = Circuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure_all()
+
+    s1 = Simulator(backend="cpu", seed=42).run(qc, shots=200)
+    s2 = Simulator(backend="cpu", seed=42).run(qc, shots=200)
+    assert s1 == s2, f"Seeded runs differ: {s1} vs {s2}"
+
+
+def test_auto_backend_default():
+    circuit = Circuit(2)
+    circuit.h(0)
+    circuit.cx(0, 1)
+    circuit.measure_all()
+
+    sim = Simulator()  # default is 'auto'
+    result = sim.run(circuit, shots=500)
+    assert sum(result.values()) == 500
+
+
+def test_select_backend_tiers(monkeypatch):
+    """CPU <=16q, MLX 17-30q, Metal 31q+ (MLX caps at 30q; Metal is the only 31q+ path)."""
+    import macquerel.simulator as sim
+
+    monkeypatch.setattr(sim, "_MLX_AVAILABLE", True)
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", True)
+    assert sim._select_backend(16) == "cpu"
+    assert sim._select_backend(17) == "mlx"
+    assert sim._select_backend(30) == "mlx"
+    assert sim._select_backend(31) == "metal"
+    assert sim._select_backend(33) == "metal"
+
+
+def test_select_backend_fallbacks(monkeypatch):
+    import macquerel.simulator as sim
+
+    # No Metal: MLX still serves 17-30q. 31q+ has no working backend (MLX would
+    # crash on the int32 ceiling), so we fall back to CPU rather than route there.
+    monkeypatch.setattr(sim, "_MLX_AVAILABLE", True)
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", False)
+    assert sim._select_backend(25) == "mlx"
+    assert sim._select_backend(31) == "cpu"
+
+    # No MLX: Metal serves everything above the CPU tier.
+    monkeypatch.setattr(sim, "_MLX_AVAILABLE", False)
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", True)
+    assert sim._select_backend(20) == "metal"
+    assert sim._select_backend(31) == "metal"
+
+    # Neither: CPU everywhere.
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", False)
+    assert sim._select_backend(20) == "cpu"

@@ -1,0 +1,49 @@
+{
+  "config": {
+    "qubits": [
+      16,
+      18,
+      20,
+      22
+    ],
+    "depth": 50,
+    "reps": 9,
+    "seed": 42,
+    "json": "benchmarks/data/a17db04-baseline.json",
+    "no_chart": true
+  },
+  "results": [
+    {
+      "n_qubits": 16,
+      "depth": 50,
+      "reps": 9,
+      "cpu_ms": 3.763,
+      "mlx_ms": 15.108,
+      "speedup": 0.249
+    },
+    {
+      "n_qubits": 18,
+      "depth": 50,
+      "reps": 9,
+      "cpu_ms": 13.987,
+      "mlx_ms": 32.267,
+      "speedup": 0.433
+    },
+    {
+      "n_qubits": 20,
+      "depth": 50,
+      "reps": 9,
+      "cpu_ms": 50.56,
+      "mlx_ms": 112.315,
+      "speedup": 0.45
+    },
+    {
+      "n_qubits": 22,
+      "depth": 50,
+      "reps": 9,
+      "cpu_ms": 297.617,
+      "mlx_ms": 353.644,
+      "speedup": 0.842
+    }
+  ]
+}

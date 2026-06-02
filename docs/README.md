@@ -1,14 +1,18 @@
 # macquerel
 
-A quantum state-vector simulator for Apple Silicon
+A quantum state-vector simulator for Apple Silicon.
 
-## Features
-- MLX-based GPU acceleration
-- Custom Metal kernels for high-qubit counts
-- Qiskit/Cirq-compatible API
-- Memory-bandwidth-optimized architecture
+## Documentation
 
-## Getting Started
-1. Install dependencies
-2. Run tests with `python -m unittest`
-3. Explore the API in `src/simulator.py`
+- [`design_spec.md`](design_spec.md) — architecture, backend design decisions, optimization strategy, and benchmarking plan
+- [`plan.md`](plan.md) — v0.1 implementation plan with step-by-step breakdown
+
+## Quick start
+
+```bash
+uv sync            # CPU backend only
+uv sync --extra mlx  # add MLX backend for Apple Silicon GPU
+uv run pytest      # run test suite
+```
+
+See the root [`README.md`](../README.md) for full usage documentation.
