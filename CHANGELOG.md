@@ -5,7 +5,7 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
-## [0.1.0]
+## [0.1.0] - 2026-06-02
 
 ### Added
 
@@ -18,3 +18,6 @@ All notable changes to this project are documented here, following
 - Automatic backend selection (CPU ≤16q, MLX 17–30q, Metal 31q+).
 - Gate-fusion compiler and diagonal/permutation/dense gate classification.
 - Cirq and Qiskit import adapters (optional extras).
+
+[Unreleased]: https://github.com/guenp/macquerel/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/guenp/macquerel/releases/tag/v0.1.0
