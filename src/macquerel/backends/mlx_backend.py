@@ -54,6 +54,21 @@ class MLXState:
     n_qubits: int
 
 
+def _diag_phase_kernel(real, imag, diag_r, diag_i, gate_idx):
+    """Diagonal gate: gather the per-amplitude phase, then complex-multiply.
+
+    Pure-functional so mx.compile can fuse the gather and the six elementwise
+    ops into a single kernel (cached per input shape)."""
+    pr = diag_r[gate_idx]
+    pi = diag_i[gate_idx]
+    return pr * real - pi * imag, pr * imag + pi * real
+
+
+def _perm_gather_kernel(real, imag, src):
+    """Permutation gate: gather both SoA components by source index."""
+    return real[src], imag[src]
+
+
 class MLXBackend:
     """
     MLX-accelerated backend for Apple Silicon. State is stored in SoA form
@@ -76,6 +91,10 @@ class MLXBackend:
         self._one = mx.array(1, dtype=mx.uint32)
         self._arange_cache: dict[int, "mx.array"] = {}
         self._classify_cache: dict[tuple, str] = {}
+        # P8: compile the hot elementwise kernels so MLX fuses the gather +
+        # arithmetic into one kernel and caches the trace per input shape.
+        self._diag_kernel = mx.compile(_diag_phase_kernel)
+        self._perm_kernel = mx.compile(_perm_gather_kernel)
 
     def _arange(self, n: int) -> "mx.array":
         """Cached, evaluated uint32 [0, 2**n) index vector (one per qubit count)."""
@@ -142,13 +161,8 @@ class MLXBackend:
             bit = (indices >> (n - 1 - q)) & self._one
             gate_idx = gate_idx | (bit << (k - 1 - bit_pos))
 
-        pr = diag_r[gate_idx]
-        pi = diag_i[gate_idx]
-
-        new_real = pr * sv.real - pi * sv.imag
-        new_imag = pr * sv.imag + pi * sv.real
-        # No per-gate mx.eval: keep the computation lazy so MLX can fuse across
-        # gates. Evaluation is forced at segment boundaries (to_numpy/measure/sample).
+        # Compiled gather + complex multiply (kept lazy; eval at segment boundary).
+        new_real, new_imag = self._diag_kernel(sv.real, sv.imag, diag_r, diag_i, gate_idx)
         return MLXState(real=new_real, imag=new_imag, n_qubits=n)
 
     def _apply_permutation(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
@@ -193,8 +207,7 @@ class MLXBackend:
             bit = (in_row >> (k - 1 - j)) & one
             src = (src & clear_mask) | (bit << shift)
 
-        new_real = sv.real[src]
-        new_imag = sv.imag[src]
+        new_real, new_imag = self._perm_kernel(sv.real, sv.imag, src)
         return MLXState(real=new_real, imag=new_imag, n_qubits=n)
 
     def _apply_metal_kernel_1q(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
