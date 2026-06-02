@@ -14,6 +14,9 @@ __pycache__/
 dist/
 build/
 .eggs/
+
+# zensical / docs build output
+site/
 .venv/
 venv/
 env/
