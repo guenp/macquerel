@@ -121,7 +121,8 @@ class MLXBackend:
 
         new_real = pr * sv.real - pi * sv.imag
         new_imag = pr * sv.imag + pi * sv.real
-        mx.eval(new_real, new_imag)
+        # No per-gate mx.eval: keep the computation lazy so MLX can fuse across
+        # gates. Evaluation is forced at segment boundaries (to_numpy/measure/sample).
         return MLXState(real=new_real, imag=new_imag, n_qubits=n)
 
     def _apply_permutation(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
@@ -167,7 +168,6 @@ class MLXBackend:
         mx_perm = mx.array(perm)  # zero-copy int32 indices
         new_real = sv.real[mx_perm]
         new_imag = sv.imag[mx_perm]
-        mx.eval(new_real, new_imag)
         return MLXState(real=new_real, imag=new_imag, n_qubits=n)
 
     def _apply_metal_kernel_1q(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
@@ -189,7 +189,6 @@ class MLXBackend:
             grid=(threads, 1, 1),
             threadgroup=(min(threads, 256), 1, 1),
         )
-        mx.eval(out_real, out_imag)
         return MLXState(real=out_real, imag=out_imag, n_qubits=n)
 
     def _dense_apply(
@@ -259,7 +258,6 @@ class MLXBackend:
 
         new_real = mx.where(mask, gated_r, sv.real)
         new_imag = mx.where(mask, gated_i, sv.imag)
-        mx.eval(new_real, new_imag)
         return MLXState(real=new_real, imag=new_imag, n_qubits=n)
 
     def _apply_general(
@@ -281,7 +279,6 @@ class MLXBackend:
             return self._apply_controlled(sv, mat, targets, controls)
 
         out_r, out_i = self._dense_apply(sv.real, sv.imag, mat, targets, n)
-        mx.eval(out_r, out_i)
         return MLXState(real=out_r, imag=out_i, n_qubits=n)
 
     def measure(
