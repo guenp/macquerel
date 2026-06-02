@@ -15,7 +15,10 @@ except ImportError:
 
 
 def _select_backend(n_qubits: int) -> str:
-    if n_qubits <= 14:
+    # CPU wins through ~16 qubits: the state vector is only a few MB, so per-kernel
+    # GPU dispatch latency dominates the compute. Benchmarks (benchmarks/data) put
+    # the crossover just above 16q, where MLX pulls ahead (2.4x at 18q, growing).
+    if n_qubits <= 16:
         return "cpu"
     if _MLX_AVAILABLE and n_qubits <= 31:
         return "mlx"
