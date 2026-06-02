@@ -52,63 +52,56 @@ for b, a in zip(before, after):
     print(f"{b['n_qubits']:>6}  {b['cpu_ms']:>12.1f}  {a['cpu_ms']:>11.1f}  {delta:>+7.1f}%")
 ```
 
-## Plotting with matplotlib
+## Plotting results
 
-Install matplotlib if needed:
+The repository tracks per-commit benchmark runs as JSON in `benchmarks/data/`,
+named `<commit>-<label>.json`, and ships a plotting script that turns them into
+a two-panel comparison chart.
+
+Install the plotting dependency (matplotlib) once via the `viz` extra:
 
 ```bash
-uv add --dev matplotlib
+uv sync --extra viz
 ```
 
-Then plot CPU and MLX times vs qubit count:
+Generate a benchmark run labeled by the current commit, then plot every run in
+the directory:
 
-```python
-import json
-import matplotlib.pyplot as plt
+```bash
+# 1. save a run keyed to the current commit
+CID=$(git rev-parse --short HEAD)
+uv run python tests/benchmarks/bench_backends.py \
+    --qubits 16 18 20 22 --depth 50 --reps 3 \
+    --json benchmarks/data/${CID}-mychange.json --no-chart
 
-data = json.load(open("results/run1.json"))["results"]
-
-n      = [r["n_qubits"] for r in data]
-cpu_ms = [r["cpu_ms"]   for r in data]
-mlx_ms = [r["mlx_ms"]   for r in data if r["mlx_ms"] is not None]
-n_mlx  = [r["n_qubits"] for r in data if r["mlx_ms"] is not None]
-
-plt.figure(figsize=(8, 5))
-plt.semilogy(n, cpu_ms, "o-", label="CPU (NumPy)")
-if mlx_ms:
-    plt.semilogy(n_mlx, mlx_ms, "s-", label="MLX")
-plt.xlabel("Qubits")
-plt.ylabel("Time (ms, log scale)")
-plt.title("macquerel backend benchmark — random circuit, depth 50")
-plt.legend()
-plt.grid(True, which="both", alpha=0.3)
-plt.tight_layout()
-plt.savefig("results/benchmark.png", dpi=150)
-plt.show()
+# 2. render benchmarks/data/benchmark.png
+uv run python benchmarks/plot_results.py
 ```
 
-To plot speedup (CPU time / MLX time):
+`benchmarks/plot_results.py` auto-discovers every `*.json` in `benchmarks/data/`,
+orders the curves slowest→fastest so the color ramp tracks the optimization
+sequence, and labels each line with its commit hash. The output has two panels:
 
-```python
-speedups = [r["speedup"] for r in data if r["speedup"] is not None]
-n_sp     = [r["n_qubits"] for r in data if r["speedup"] is not None]
+- **Runtime (log scale)** — CPU reference vs each MLX run.
+- **Speedup over CPU** — `cpu_ms / mlx_ms`; above the parity line means MLX is faster.
 
-plt.figure(figsize=(8, 4))
-plt.axhline(1.0, color="gray", linestyle="--", label="breakeven")
-plt.plot(n_sp, speedups, "o-")
-plt.xlabel("Qubits")
-plt.ylabel("Speedup (CPU ms / MLX ms)")
-plt.title("MLX speedup over CPU")
-plt.grid(True, alpha=0.3)
-plt.tight_layout()
-plt.savefig("results/speedup.png", dpi=150)
-plt.show()
-```
+Drop a new JSON in `benchmarks/data/` and re-run the script to add the next curve.
+
+![benchmark comparison](../../benchmarks/data/benchmark.png)
 
 ## Interpreting results
 
-**Why MLX is currently slower than CPU:**
-The MLX backend today uses NumPy `tensordot` (CPU) for gate application and pays a NumPy↔MLX conversion on every gate call. There is no GPU work of substance. This is the §5.3 "reference gate path" described in the design spec — correct but not fast. Steps 9–10 of the v0.2+ plan (`docs/plan.md`) describe the fixes: persistent SoA MLX state and the `mx.fast.metal_kernel` pairing-loop kernel.
+**MLX now beats CPU above ~16 qubits.** After the performance work in
+`docs/plan.md` (P1: defer evaluation across gates; P2: build the permutation
+gather index on-device), the MLX backend keeps state in MLX arrays across gate
+calls and avoids per-gate host work and synchronization. On a depth-50 random
+circuit MLX is roughly **2.4× faster at 18q, 4.3× at 20q, and 5.5× at 22q**.
 
-**What to expect after those fixes:**
-Once state stays in MLX arrays across calls and the Metal kernel is in place, the crossover point (where MLX beats CPU) should appear around 15–18 qubits, where state-vector size starts to saturate NumPy's cache. Above ~20 qubits the MLX backend should pull ahead as memory bandwidth becomes the bottleneck and the GPU's higher bandwidth advantage kicks in.
+**Why CPU still wins at small qubit counts:** at ≤16 qubits the state vector is
+only a few MB, so per-kernel GPU dispatch latency dominates the actual compute
+and NumPy is faster. The crossover sits just above 16 qubits; below it the
+simulator's `auto` backend selection should prefer CPU.
+
+**Further gains** are tracked as steps P3–P8 in `docs/plan.md` (cache device
+constants, avoid the dense-path transpose copy, fuse on the hot path, re-tune
+the auto-select crossover, `mx.compile`, native complex64 storage).
