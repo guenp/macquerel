@@ -128,46 +128,47 @@ class MLXBackend:
     def _apply_permutation(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
         """Permutation gate: pure gather — no multiply/add needed.
 
-        The permutation table is built with vectorized numpy bitwise arithmetic
-        rather than a Python loop over 2**n basis states, then applied as a
-        single MLX gather. The only Python-level loop is over the k target
-        qubits (k <= a few), not the 2**n amplitudes.
+        The gather index array is built entirely on-device with mx.arange +
+        bitwise ops (mirroring _apply_diagonal), so there is no host-side O(2**n)
+        NumPy table build and no host->device copy per gate. The only host work
+        is the tiny 2**k inverse-permutation lookup over the target subspace.
         """
         n = sv.n_qubits
         size = 2**n
         k = len(targets)
 
-        # Small (2**k)-element permutation on just the target subspace:
+        # Small (2**k)-element permutation on the target subspace:
         # gate_perm[input_row] -> output_row (matches the dense argmax mapping).
         gate_perm = np.array(
             [int(np.argmax(np.abs(matrix[r]))) for r in range(2**k)],
             dtype=np.int64,
         )
+        # Gather needs the inverse: which input row feeds a given output row.
+        inv_gate_perm = np.empty(2**k, dtype=np.uint32)
+        inv_gate_perm[gate_perm] = np.arange(2**k, dtype=np.uint32)
 
-        idx = np.arange(size, dtype=np.int64)
+        indices = mx.arange(size, dtype=mx.uint32)
+        one = mx.array(1, dtype=mx.uint32)
 
-        # Extract the k target bits of every basis index into a gate-row index.
-        gate_row = np.zeros(size, dtype=np.int64)
+        # Extract the k target bits of every output index into a gate-row index.
+        out_row = mx.zeros(size, dtype=mx.uint32)
         for j, t in enumerate(targets):
-            bit = (idx >> (n - 1 - t)) & 1
-            gate_row |= bit << (k - 1 - j)
+            bit = (indices >> (n - 1 - t)) & one
+            out_row = out_row | (bit << (k - 1 - j))
 
-        out_row = gate_perm[gate_row]
+        # Map each output row to its source row via the inverse permutation.
+        in_row = mx.array(inv_gate_perm)[out_row]
 
-        # Rewrite the target bits of each index with the permuted output bits.
-        new_i = idx.copy()
+        # Source index = output index with its target bits rewritten to in_row.
+        src = indices
         for j, t in enumerate(targets):
             shift = n - 1 - t
-            new_i &= ~(1 << shift)
-            bit = (out_row >> (k - 1 - j)) & 1
-            new_i |= bit << shift
+            clear_mask = mx.array(((1 << n) - 1) ^ (1 << shift), dtype=mx.uint32)
+            bit = (in_row >> (k - 1 - j)) & one
+            src = (src & clear_mask) | (bit << shift)
 
-        perm = np.empty(size, dtype=np.int32)
-        perm[new_i] = idx
-
-        mx_perm = mx.array(perm)  # zero-copy int32 indices
-        new_real = sv.real[mx_perm]
-        new_imag = sv.imag[mx_perm]
+        new_real = sv.real[src]
+        new_imag = sv.imag[src]
         return MLXState(real=new_real, imag=new_imag, n_qubits=n)
 
     def _apply_metal_kernel_1q(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
