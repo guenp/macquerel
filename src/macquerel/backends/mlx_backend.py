@@ -68,6 +68,33 @@ class MLXBackend:
                 "Note: mlx requires macOS on Apple Silicon (M1 or later)."
             )
         self._rng_key = mx.random.key(seed) if seed is not None else None
+        # Per-gate device constants reused across calls (cause (3)/(7) in the
+        # perf plan). The arange index is reused by every diagonal/permutation
+        # gate and bounded by the number of distinct qubit counts; `_one` avoids
+        # rebuilding the scalar uint32 mask each loop iteration; the classify
+        # cache avoids re-scanning identical gate matrices.
+        self._one = mx.array(1, dtype=mx.uint32)
+        self._arange_cache: dict[int, "mx.array"] = {}
+        self._classify_cache: dict[tuple, str] = {}
+
+    def _arange(self, n: int) -> "mx.array":
+        """Cached, evaluated uint32 [0, 2**n) index vector (one per qubit count)."""
+        a = self._arange_cache.get(n)
+        if a is None:
+            a = mx.arange(2**n, dtype=mx.uint32)
+            mx.eval(a)
+            self._arange_cache[n] = a
+        return a
+
+    def _classify(self, mat: np.ndarray) -> str:
+        """classify(mat) memoized by matrix bytes (identical gates share a result)."""
+        key = (mat.shape, mat.tobytes())
+        kind = self._classify_cache.get(key)
+        if kind is None:
+            from macquerel.gates import classify
+            kind = classify(mat)
+            self._classify_cache[key] = kind
+        return kind
 
     def allocate(self, n_qubits: int, dtype=np.complex64) -> MLXState:
         size = 2**n_qubits
@@ -91,9 +118,8 @@ class MLXBackend:
         targets: list[int],
         controls: list[int] | None = None,
     ) -> MLXState:
-        from macquerel.gates import classify
         mat = matrix.astype(np.complex64)
-        kind = classify(mat)
+        kind = self._classify(mat)
 
         if kind == "diagonal" and not controls:
             return self._apply_diagonal(sv, mat, targets)
@@ -110,10 +136,10 @@ class MLXBackend:
         diag_i = mx.array(diag.imag.astype(np.float32))  # zero-copy
 
         size = 2**n
-        indices = mx.arange(size, dtype=mx.uint32)
+        indices = self._arange(n)
         gate_idx = mx.zeros(size, dtype=mx.uint32)
         for bit_pos, q in enumerate(targets):
-            bit = (indices >> (n - 1 - q)) & mx.array(1, dtype=mx.uint32)
+            bit = (indices >> (n - 1 - q)) & self._one
             gate_idx = gate_idx | (bit << (k - 1 - bit_pos))
 
         pr = diag_r[gate_idx]
@@ -147,8 +173,8 @@ class MLXBackend:
         inv_gate_perm = np.empty(2**k, dtype=np.uint32)
         inv_gate_perm[gate_perm] = np.arange(2**k, dtype=np.uint32)
 
-        indices = mx.arange(size, dtype=mx.uint32)
-        one = mx.array(1, dtype=mx.uint32)
+        indices = self._arange(n)
+        one = self._one
 
         # Extract the k target bits of every output index into a gate-row index.
         out_row = mx.zeros(size, dtype=mx.uint32)
