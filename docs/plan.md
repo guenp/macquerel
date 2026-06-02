@@ -294,38 +294,46 @@ that widen the gap well beyond the floor.
 
 **Optimizations** (ranked):
 
-- **Step P1 — Defer evaluation (high impact, low effort).** Drop per-gate `mx.eval`;
-  evaluate once per segment (at measure / `to_numpy` / flush boundaries), optionally every
-  N gates to bound graph depth and memory. Targets cause (1); ~3× on its own, more once it
-  enables cross-gate kernel fusion.
-- **Step P2 — Eliminate host-side permutation work (high impact, medium effort).** Compute
-  the permutation index on-device with `mx.arange` + bitwise ops (as `_apply_diagonal`
-  already does), or cache the table keyed by `(n, tuple(targets), kind)`. Targets cause
-  (2); removes ~9 ms/gate at 22q.
-- **Step P3 — Cache per-gate device constants (medium–high impact, medium effort).** Cache
-  diagonal phase vectors, uploaded gate matrices, and `classify` results, keyed by gate
-  identity. Avoids rebuilding `mx.arange(2ⁿ)` and re-uploading matrices each call. Targets
-  causes (3) and (7).
-- **Step P4 — Evaluate native `complex64` storage (medium–high impact, higher effort).**
-  One tensordot instead of four, half the kernels for elementwise ops. Confirm why SoA was
-  originally chosen (the spec cites up to 6.9× for SoA over interleaved) and benchmark both
-  on current MLX before committing. Targets cause (4).
-- **Step P5 — Avoid the full transpose copy (medium impact, medium effort).** Use a
-  gather/scatter index formulation or operate on reshaped views instead of materializing a
-  transposed `2ⁿ` array per dense gate. Targets cause (5).
-- **Step P6 — Fuse before MLX dispatch (medium impact, low–medium effort).** Apply the
-  fusion pass on the simulator/benchmark hot path so fewer, larger gates amortize launch
-  cost — but avoid fusing cheap diagonal/permutation gates into dense ones. Targets cause
-  (6).
-- **Step P7 — Re-tune the auto-select crossover (low effort).** `_select_backend` in
-  `simulator.py` currently switches to MLX at >14 qubits, but CPU wins through ~22q for
-  these circuits. Measure the real crossover and set the threshold accordingly, or select
-  per gate-type.
-- **Step P8 — `mx.compile` the hot gate kernels (low–medium impact, low effort).** Reduce
-  dispatch overhead on the repeated gate kernels.
+- **Step P1 — Defer evaluation (high impact, low effort). ✅ DONE (`3c74da8`).** Dropped
+  per-gate `mx.eval` from all five gate paths; evaluation is now forced only at segment
+  boundaries (measure / `to_numpy` / sample). Targets cause (1). Measured 1.1–1.8× on its
+  own.
+- **Step P2 — Eliminate host-side permutation work (high impact, medium effort). ✅ DONE
+  (`81e96e3`).** Compute the permutation gather index on-device with `mx.arange` + bitwise
+  ops (mirroring `_apply_diagonal`); only the tiny `2**k` inverse lookup stays on the host.
+  Targets cause (2); removed ~9 ms/gate at 22q. This is the change that flipped MLX from
+  slower to faster than CPU.
+- **Step P3 — Cache per-gate device constants (medium–high impact, medium effort). ✅ DONE
+  (`6178f2f`).** Cache the constants reused on every gate: the `arange(2ⁿ)` index (bounded
+  by distinct qubit counts), the scalar mask, and `classify()` results memoized by matrix
+  bytes. Targets causes (3) and (7). Deliberately does **not** cache full `2ⁿ` per-target
+  index tables — those would grow memory unboundedly and the on-device rebuild is cheap
+  after P2.
+- **Step P4 — Evaluate native `complex64` storage (medium–high impact, higher effort).
+  ⏸ DEFERRED.** One tensordot instead of four, half the kernels for elementwise ops. The
+  spec cites up to 6.9× for SoA over interleaved, so this needs an A/B benchmark on current
+  MLX before committing — deferred until that measurement can be run. Targets cause (4).
+- **Step P5 — Avoid the full transpose copy (medium impact, medium effort). ⏸ DEFERRED.**
+  Only affects `_dense_apply`, which is rarely hit: single-qubit dense gates use the Metal
+  kernel and the common 2-qubit gates (CNOT/CZ/SWAP) are permutation/diagonal. CPU pays the
+  same transpose, so it is not a CPU-vs-MLX gap. Low value; needs a benchmark to justify the
+  rewrite risk. Targets cause (5).
+- **Step P6 — Fuse before MLX dispatch. ✅ ALREADY SATISFIED.** The simulator already runs
+  the fusion pass on the hot path (`statevector()` and `run()` call `fuse_gates`). The
+  `bench_backends.py` microbenchmark deliberately stays unfused to measure raw per-gate
+  throughput, so it should not be changed. No code change needed. Targets cause (6).
+- **Step P7 — Re-tune the auto-select crossover (low effort). ✅ DONE (`351376c`).**
+  `_select_backend` now routes ≤16 qubits to CPU (was ≤14) and MLX for 17–31, matching the
+  measured crossover (CPU wins through 16q, MLX from 18q+).
+- **Step P8 — `mx.compile` the hot gate kernels (low–medium impact, low effort).
+  ⏸ DEFERRED.** Interacts with the deferred-evaluation graph from P1 and the variable
+  per-gate shapes; benefit is uncertain without a benchmark. Deferred.
 
-The two highest-leverage changes are **P1** (defer eval) and **P2** (kill host-side perm
-work); together they target the costs measured directly above.
+The two highest-leverage changes were **P1** (defer eval) and **P2** (kill host-side perm
+work). Combined with P3 and P7, MLX went from slower than CPU everywhere to **2.4–5.5×
+faster at 18–22 qubits** (see `benchmarks/data/`). The remaining steps (P4, P5, P8) are
+deferred because they are perf-sensitive and need A/B benchmarking to justify — they should
+be revisited with the benchmark harness rather than implemented blind.
 
 ---
 
