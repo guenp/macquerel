@@ -125,24 +125,46 @@ class MLXBackend:
         return MLXState(real=new_real, imag=new_imag, n_qubits=n)
 
     def _apply_permutation(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
-        """Permutation gate: pure gather — no multiply/add needed."""
+        """Permutation gate: pure gather — no multiply/add needed.
+
+        The permutation table is built with vectorized numpy bitwise arithmetic
+        rather than a Python loop over 2**n basis states, then applied as a
+        single MLX gather. The only Python-level loop is over the k target
+        qubits (k <= a few), not the 2**n amplitudes.
+        """
         n = sv.n_qubits
         size = 2**n
         k = len(targets)
-        perm = np.arange(size, dtype=np.int32)
-        for i in range(size):
-            bits = [(i >> (n - 1 - t)) & 1 for t in targets]
-            gate_row = sum(b << (k - 1 - j) for j, b in enumerate(bits))
-            out_row = int(np.argmax(np.abs(matrix[gate_row])))
-            new_i = i
-            for j, t in enumerate(targets):
-                bit = (out_row >> (k - 1 - j)) & 1
-                if bit:
-                    new_i |= 1 << (n - 1 - t)
-                else:
-                    new_i &= ~(1 << (n - 1 - t))
-            perm[new_i] = i
-        mx_perm = mx.array(perm)
+
+        # Small (2**k)-element permutation on just the target subspace:
+        # gate_perm[input_row] -> output_row (matches the dense argmax mapping).
+        gate_perm = np.array(
+            [int(np.argmax(np.abs(matrix[r]))) for r in range(2**k)],
+            dtype=np.int64,
+        )
+
+        idx = np.arange(size, dtype=np.int64)
+
+        # Extract the k target bits of every basis index into a gate-row index.
+        gate_row = np.zeros(size, dtype=np.int64)
+        for j, t in enumerate(targets):
+            bit = (idx >> (n - 1 - t)) & 1
+            gate_row |= bit << (k - 1 - j)
+
+        out_row = gate_perm[gate_row]
+
+        # Rewrite the target bits of each index with the permuted output bits.
+        new_i = idx.copy()
+        for j, t in enumerate(targets):
+            shift = n - 1 - t
+            new_i &= ~(1 << shift)
+            bit = (out_row >> (k - 1 - j)) & 1
+            new_i |= bit << shift
+
+        perm = np.empty(size, dtype=np.int32)
+        perm[new_i] = idx
+
+        mx_perm = mx.array(perm)  # zero-copy int32 indices
         new_real = sv.real[mx_perm]
         new_imag = sv.imag[mx_perm]
         mx.eval(new_real, new_imag)
@@ -170,39 +192,25 @@ class MLXBackend:
         mx.eval(out_real, out_imag)
         return MLXState(real=out_real, imag=out_imag, n_qubits=n)
 
-    def _apply_general(
+    def _dense_apply(
         self,
-        sv: MLXState,
-        matrix: np.ndarray,
+        real: "mx.array",
+        imag: "mx.array",
+        mat: np.ndarray,
         targets: list[int],
-        controls: list[int] | None,
-    ) -> MLXState:
-        """General gate: SoA components, tensordot on CPU for correctness."""
-        n = sv.n_qubits
+        n: int,
+    ) -> tuple["mx.array", "mx.array"]:
+        """Apply a dense k-qubit matrix to `targets` over the full state.
+
+        Returns flattened (real, imag) MLX arrays. Stays entirely on the GPU
+        via mx.tensordot — no numpy round-trip.
+        """
         k = len(targets)
-        mat = matrix.astype(np.complex64)
-
-        if _METAL_KERNEL is not None and k == 1 and not controls:
-            return self._apply_metal_kernel_1q(sv, mat, targets)
-
-        if controls:
-            from macquerel.backends.cpu import CPUBackend
-            mx.eval(sv.real, sv.imag)
-            real_np = np.array(sv.real, dtype=np.float32)
-            imag_np = np.array(sv.imag, dtype=np.float32)
-            sv_complex = (real_np + 1j * imag_np).astype(np.complex64)
-            sv_complex = CPUBackend()._apply_controlled(sv_complex, mat, targets, controls)
-            new_real = mx.array(sv_complex.real.astype(np.float32))
-            new_imag = mx.array(sv_complex.imag.astype(np.float32))
-            mx.eval(new_real, new_imag)
-            return MLXState(real=new_real, imag=new_imag, n_qubits=n)
-
-        # Use MLX tensordot to keep state on GPU — no numpy round-trip
         mat_r = mx.array(mat.real.astype(np.float32)).reshape((2,) * (2 * k))
         mat_i = mx.array(mat.imag.astype(np.float32)).reshape((2,) * (2 * k))
 
-        state_r = sv.real.reshape((2,) * n)
-        state_i = sv.imag.reshape((2,) * n)
+        state_r = real.reshape((2,) * n)
+        state_i = imag.reshape((2,) * n)
 
         input_axes = list(range(k, 2 * k))
 
@@ -221,7 +229,58 @@ class MLXBackend:
             inv_perm[old_pos] = new_pos
         out_r = mx.transpose(out_r, inv_perm).reshape(-1)
         out_i = mx.transpose(out_i, inv_perm).reshape(-1)
+        return out_r, out_i
 
+    def _apply_controlled(
+        self,
+        sv: MLXState,
+        matrix: np.ndarray,
+        targets: list[int],
+        controls: list[int],
+    ) -> MLXState:
+        """Controlled gate, computed natively on the GPU.
+
+        Applies the matrix to the targets across the whole state, then selects
+        between the gated and original amplitudes with a control mask (all
+        control bits set) via mx.where. No CPU fallback / numpy round-trip.
+        """
+        n = sv.n_qubits
+        size = 2**n
+
+        gated_r, gated_i = self._dense_apply(sv.real, sv.imag, matrix, targets, n)
+
+        indices = mx.arange(size, dtype=mx.uint32)
+        one = mx.array(1, dtype=mx.uint32)
+        mask = None
+        for c in controls:
+            bit = (indices >> (n - 1 - c)) & one
+            cond = bit == one
+            mask = cond if mask is None else (mask & cond)
+
+        new_real = mx.where(mask, gated_r, sv.real)
+        new_imag = mx.where(mask, gated_i, sv.imag)
+        mx.eval(new_real, new_imag)
+        return MLXState(real=new_real, imag=new_imag, n_qubits=n)
+
+    def _apply_general(
+        self,
+        sv: MLXState,
+        matrix: np.ndarray,
+        targets: list[int],
+        controls: list[int] | None,
+    ) -> MLXState:
+        """General dense gate, kept on the GPU via mx.tensordot."""
+        n = sv.n_qubits
+        k = len(targets)
+        mat = matrix.astype(np.complex64)
+
+        if _METAL_KERNEL is not None and k == 1 and not controls:
+            return self._apply_metal_kernel_1q(sv, mat, targets)
+
+        if controls:
+            return self._apply_controlled(sv, mat, targets, controls)
+
+        out_r, out_i = self._dense_apply(sv.real, sv.imag, mat, targets, n)
         mx.eval(out_r, out_i)
         return MLXState(real=out_r, imag=out_i, n_qubits=n)
 
