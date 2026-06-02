@@ -1,0 +1,49 @@
+{
+  "config": {
+    "qubits": [
+      16,
+      18,
+      20,
+      22
+    ],
+    "depth": 50,
+    "reps": 3,
+    "seed": 42,
+    "json": "benchmarks/data/b6bef6f-p8-mxcompile.json",
+    "no_chart": true
+  },
+  "results": [
+    {
+      "n_qubits": 16,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 3.967,
+      "mlx_ms": 3.165,
+      "speedup": 1.253
+    },
+    {
+      "n_qubits": 18,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 15.261,
+      "mlx_ms": 4.691,
+      "speedup": 3.253
+    },
+    {
+      "n_qubits": 20,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 51.063,
+      "mlx_ms": 9.902,
+      "speedup": 5.157
+    },
+    {
+      "n_qubits": 22,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 296.508,
+      "mlx_ms": 45.158,
+      "speedup": 6.566
+    }
+  ]
+}
