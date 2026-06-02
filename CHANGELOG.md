@@ -5,6 +5,13 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-02
+
+### Fixed
+
+- Use an absolute logo URL in the README so it renders on the PyPI project page
+  (relative image paths don't resolve there).
+
 ## [0.1.0] - 2026-06-02
 
 ### Added
@@ -19,5 +26,6 @@ All notable changes to this project are documented here, following
 - Gate-fusion compiler and diagonal/permutation/dense gate classification.
 - Cirq and Qiskit import adapters (optional extras).
 
-[Unreleased]: https://github.com/guenp/macquerel/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/guenp/macquerel/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/guenp/macquerel/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/guenp/macquerel/releases/tag/v0.1.0
