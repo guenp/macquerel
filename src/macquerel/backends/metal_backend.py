@@ -31,7 +31,7 @@ import numpy as np
 try:
     import Metal  # pyobjc-framework-Metal  # ty: ignore[unresolved-import]
 
-    _METAL_AVAILABLE = Metal.MTLCreateSystemDefaultDevice() is not None
+    _METAL_AVAILABLE = Metal.MTLCreateSystemDefaultDevice() is not None  # ty: ignore[unresolved-attribute]
 except Exception:  # pragma: no cover - import guard for non-Apple / no-GPU
     _METAL_AVAILABLE = False
 
@@ -146,7 +146,7 @@ class MetalBackend:
                 "Note: requires macOS on Apple Silicon with a Metal GPU."
             )
         self._rng = np.random.default_rng(seed)
-        self._dev = Metal.MTLCreateSystemDefaultDevice()
+        self._dev = Metal.MTLCreateSystemDefaultDevice()  # ty: ignore[unresolved-attribute]
         self._queue = self._dev.newCommandQueue()
 
         lib, err = self._dev.newLibraryWithSource_options_error_(_KERNEL_SRC, None, None)
@@ -175,7 +175,9 @@ class MetalBackend:
         data = np.ascontiguousarray(arr).tobytes()
         # length must be > 0; callers pass at least one element.
         return self._dev.newBufferWithBytes_length_options_(
-            data, len(data), Metal.MTLResourceStorageModeShared
+            data,
+            len(data),
+            Metal.MTLResourceStorageModeShared,  # ty: ignore[unresolved-attribute]
         )
 
     def _grid(self, total: int):
@@ -201,7 +203,8 @@ class MetalBackend:
         for val, idx in scalars:
             enc.setBytes_length_atIndex_(np.array([val], dtype=np.uint32).tobytes(), 4, idx)
         enc.dispatchThreads_threadsPerThreadgroup_(
-            Metal.MTLSizeMake(gx, gy, gz), Metal.MTLSizeMake(tg, 1, 1)
+            Metal.MTLSizeMake(gx, gy, gz),  # ty: ignore[unresolved-attribute]
+            Metal.MTLSizeMake(tg, 1, 1),  # ty: ignore[unresolved-attribute]
         )
         enc.endEncoding()
         cb.commit()
@@ -211,7 +214,10 @@ class MetalBackend:
 
     def allocate(self, n_qubits: int, dtype=np.complex64) -> MetalState:
         nbytes = (2**n_qubits) * 8
-        buf = self._dev.newBufferWithLength_options_(nbytes, Metal.MTLResourceStorageModeShared)
+        buf = self._dev.newBufferWithLength_options_(
+            nbytes,
+            Metal.MTLResourceStorageModeShared,  # ty: ignore[unresolved-attribute]
+        )
         if buf is None:
             raise MemoryError(f"Metal buffer allocation failed for {n_qubits} qubits")
         state = MetalState(buf=buf, n_qubits=n_qubits)

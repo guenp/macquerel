@@ -219,9 +219,9 @@ class MLXBackend:
         for c in controls:
             bit = (indices >> (n - 1 - c)) & one
             cond = bit == one
-            mask = cond if mask is None else (mask & cond)
+            mask = cond if mask is None else (mask & cond)  # ty: ignore[unsupported-operator]
 
-        new_data = mx.where(mask, gated, sv.data)
+        new_data = mx.where(mask, gated, sv.data)  # ty: ignore[invalid-argument-type]
         return MLXState(data=new_data, n_qubits=n)
 
     def _apply_general(

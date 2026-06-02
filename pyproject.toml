@@ -85,6 +85,12 @@ known-first-party = ["macquerel"]
 [tool.ty.environment]
 python-version = "3.11"
 
+[tool.ty.rules]
+# The optional backends (mlx, pyobjc-Metal) are guarded imports: the ignore
+# comments on them are needed when the extra is absent (e.g. CI's no-extras lint
+# job) but appear "unused" when it's installed. Don't flag that mismatch.
+unused-ignore-comment = "ignore"
+
 # ---- Tests + coverage ----
 [tool.pytest.ini_options]
 testpaths = ["tests"]
