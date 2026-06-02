@@ -1,0 +1,49 @@
+{
+  "config": {
+    "qubits": [
+      16,
+      18,
+      20,
+      22
+    ],
+    "depth": 50,
+    "reps": 3,
+    "seed": 42,
+    "json": "benchmarks/data/81e96e3-p2-ondevice-perm.json",
+    "no_chart": true
+  },
+  "results": [
+    {
+      "n_qubits": 16,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 3.74,
+      "mlx_ms": 4.214,
+      "speedup": 0.888
+    },
+    {
+      "n_qubits": 18,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 14.033,
+      "mlx_ms": 5.748,
+      "speedup": 2.441
+    },
+    {
+      "n_qubits": 20,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 50.398,
+      "mlx_ms": 11.79,
+      "speedup": 4.275
+    },
+    {
+      "n_qubits": 22,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 290.103,
+      "mlx_ms": 52.963,
+      "speedup": 5.477
+    }
+  ]
+}

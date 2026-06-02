@@ -1,0 +1,49 @@
+{
+  "config": {
+    "qubits": [
+      16,
+      18,
+      20,
+      22
+    ],
+    "depth": 50,
+    "reps": 3,
+    "seed": 42,
+    "json": "benchmarks/data/3c74da8-p1-defer-eval.json",
+    "no_chart": true
+  },
+  "results": [
+    {
+      "n_qubits": 16,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 3.741,
+      "mlx_ms": 8.575,
+      "speedup": 0.436
+    },
+    {
+      "n_qubits": 18,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 13.958,
+      "mlx_ms": 26.18,
+      "speedup": 0.533
+    },
+    {
+      "n_qubits": 20,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 50.74,
+      "mlx_ms": 94.35,
+      "speedup": 0.538
+    },
+    {
+      "n_qubits": 22,
+      "depth": 50,
+      "reps": 3,
+      "cpu_ms": 291.125,
+      "mlx_ms": 314.808,
+      "speedup": 0.925
+    }
+  ]
+}
