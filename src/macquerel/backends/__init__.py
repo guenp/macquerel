@@ -6,6 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 
 from macquerel.backends.cpu import CPUBackend
+from macquerel.backends.metal_backend import MetalBackend
 from macquerel.backends.mlx_backend import MLXBackend
 
 
@@ -20,4 +21,4 @@ class Backend(Protocol):
     def abs2sum(self, sv, qubits: list[int]) -> np.ndarray: ...
 
 
-__all__ = ["Backend", "CPUBackend", "MLXBackend"]
+__all__ = ["Backend", "CPUBackend", "MetalBackend", "MLXBackend"]

@@ -65,3 +65,37 @@ def test_auto_backend_default():
     sim = Simulator()  # default is 'auto'
     result = sim.run(circuit, shots=500)
     assert sum(result.values()) == 500
+
+
+def test_select_backend_tiers(monkeypatch):
+    """CPU <=16q, MLX 17-30q, Metal 31q+ (MLX caps at 30q; Metal is the only 31q+ path)."""
+    import macquerel.simulator as sim
+
+    monkeypatch.setattr(sim, "_MLX_AVAILABLE", True)
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", True)
+    assert sim._select_backend(16) == "cpu"
+    assert sim._select_backend(17) == "mlx"
+    assert sim._select_backend(30) == "mlx"
+    assert sim._select_backend(31) == "metal"
+    assert sim._select_backend(33) == "metal"
+
+
+def test_select_backend_fallbacks(monkeypatch):
+    import macquerel.simulator as sim
+
+    # No Metal: MLX still serves 17-30q. 31q+ has no working backend (MLX would
+    # crash on the int32 ceiling), so we fall back to CPU rather than route there.
+    monkeypatch.setattr(sim, "_MLX_AVAILABLE", True)
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", False)
+    assert sim._select_backend(25) == "mlx"
+    assert sim._select_backend(31) == "cpu"
+
+    # No MLX: Metal serves everything above the CPU tier.
+    monkeypatch.setattr(sim, "_MLX_AVAILABLE", False)
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", True)
+    assert sim._select_backend(20) == "metal"
+    assert sim._select_backend(31) == "metal"
+
+    # Neither: CPU everywhere.
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", False)
+    assert sim._select_backend(20) == "cpu"

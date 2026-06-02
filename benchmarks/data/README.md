@@ -28,6 +28,49 @@ plan.
 `benchmark.png` covers baseline→P1→P2; `benchmark-2.png` is the full comparison
 across all five recorded runs (log-scale runtime + speedup over CPU).
 
+## Metal backend (Step 15)
+
+`<commit>-metal.json` is produced by `benchmarks/bench_metal.py` (CPU vs MLX vs
+Metal, depth-30 random circuit) and plotted by `benchmarks/plot_metal.py` into
+`benchmark-3.png`. The Metal backend (PyObjC driver, 64-bit indexing, in-place)
+is the only backend that runs **31-32q** — MLX's `int32` `ShapeElem` rejects
+`>=2**31` amplitudes (Gate 0, `docs/plan.md`).
+
+Circuit time (ms), depth-30 random circuit on Apple M5 Max (128 GiB),
+`bedccb3-metal.json`:
+
+| qubits | state size | CPU | MLX | Metal |
+|---|---|---|---|---|
+| 16 | 0.5 MiB | 2.2 | 2.6 | 6.8 |
+| 20 | 8 MiB | 29.0 | 9.1 | 7.4 |
+| 24 | 128 MiB | 718 | 126 | 24.9 |
+| 26 | 0.5 GiB | n/a | 630 | 85 |
+| 28 | 2 GiB | n/a | 2,081 | 292 |
+| 30 | 8 GiB | n/a | 15,637 | 1,188 |
+| 31 | 16 GiB | n/a | **—** | 2,289 |
+| 32 | 32 GiB | n/a | **—** | 4,599 |
+| 33 | 64 GiB | n/a | **—** | 10,973 |
+
+Two findings. (1) **Capacity:** Metal reaches **31-33q** (16/32/64 GiB states)
+that no other backend can allocate — 33q (64 GiB) is the realistic ceiling on a
+128 GiB machine and uses 64.06 GiB resident (in-place, single buffer). (2)
+**Unexpected large-n speedup:** Metal also beats MLX from ~22q up, by ~13x at
+30q. Metal scales as the bandwidth-bound ideal (~2x per +1 qubit: 1,188 → 2,289
+→ 4,599 → 10,973); MLX degrades super-linearly because every gate double-buffers
+and the permutation path builds full-width gather temporaries, so at 28-30q the
+working set outgrows comfortable residency and the unified memory thrashes.
+Below ~20q Metal is *slower* — it synchronises per gate (`waitUntilCompleted`)
+while MLX fuses a lazy graph and CPU avoids dispatch latency — so auto-select
+still uses CPU ≤16q and MLX 17-30q.
+
+Large-n (>=28q) points are single-rep. MLX times there include real
+memory-pressure effects and vary run-to-run (an earlier single-rep 30q hit
+~65s), so treat them as indicative of the trend, not tight measurements; the
+Metal points are stable. The 33q row needs a 64 GiB in-place buffer — the
+benchmark touches only one amplitude to flush (a full `to_numpy` would add a
+second 64 GiB copy and exhaust the 128 GiB), matching the plan's on-device
+large-n guidance.
+
 ## Results summary
 
 MLX runtime (ms) on the depth-50 random circuit, baseline → latest (P4), reps 9:

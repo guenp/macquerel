@@ -1,0 +1,111 @@
+{
+  "config": {
+    "qubits": [
+      16,
+      18,
+      20,
+      22,
+      24,
+      26,
+      28,
+      30,
+      31,
+      32,
+      33
+    ],
+    "depth": 30,
+    "reps": 2,
+    "seed": 42,
+    "json": "benchmarks/data/bedccb3-metal.json"
+  },
+  "results": [
+    {
+      "n_qubits": 16,
+      "depth": 30,
+      "reps": 2,
+      "cpu_ms": 2.161,
+      "mlx_ms": 2.628,
+      "metal_ms": 6.798
+    },
+    {
+      "n_qubits": 18,
+      "depth": 30,
+      "reps": 2,
+      "cpu_ms": 8.189,
+      "mlx_ms": 2.707,
+      "metal_ms": 6.202
+    },
+    {
+      "n_qubits": 20,
+      "depth": 30,
+      "reps": 2,
+      "cpu_ms": 28.965,
+      "mlx_ms": 9.081,
+      "metal_ms": 7.371
+    },
+    {
+      "n_qubits": 22,
+      "depth": 30,
+      "reps": 2,
+      "cpu_ms": 151.151,
+      "mlx_ms": 33.181,
+      "metal_ms": 10.073
+    },
+    {
+      "n_qubits": 24,
+      "depth": 30,
+      "reps": 2,
+      "cpu_ms": 717.96,
+      "mlx_ms": 126.189,
+      "metal_ms": 24.874
+    },
+    {
+      "n_qubits": 26,
+      "depth": 30,
+      "reps": 1,
+      "cpu_ms": null,
+      "mlx_ms": 629.851,
+      "metal_ms": 85.148
+    },
+    {
+      "n_qubits": 28,
+      "depth": 30,
+      "reps": 1,
+      "cpu_ms": null,
+      "mlx_ms": 2080.839,
+      "metal_ms": 292.298
+    },
+    {
+      "n_qubits": 30,
+      "depth": 30,
+      "reps": 1,
+      "cpu_ms": null,
+      "mlx_ms": 15636.901,
+      "metal_ms": 1187.877
+    },
+    {
+      "n_qubits": 31,
+      "depth": 30,
+      "reps": 1,
+      "cpu_ms": null,
+      "mlx_ms": null,
+      "metal_ms": 2288.855
+    },
+    {
+      "n_qubits": 32,
+      "depth": 30,
+      "reps": 1,
+      "cpu_ms": null,
+      "mlx_ms": null,
+      "metal_ms": 4598.928
+    },
+    {
+      "n_qubits": 33,
+      "depth": 30,
+      "reps": 1,
+      "cpu_ms": null,
+      "mlx_ms": null,
+      "metal_ms": 10973.303
+    }
+  ]
+}

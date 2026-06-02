@@ -13,6 +13,11 @@ try:
 except ImportError:
     _MLX_AVAILABLE = False
 
+try:
+    from macquerel.backends.metal_backend import _METAL_AVAILABLE
+except ImportError:  # pragma: no cover - module always importable; guard anyway
+    _METAL_AVAILABLE = False
+
 
 def _select_backend(n_qubits: int) -> str:
     # CPU wins through ~16 qubits: the state vector is only a few MB, so per-kernel
@@ -20,7 +25,14 @@ def _select_backend(n_qubits: int) -> str:
     # the crossover just above 16q, where MLX pulls ahead (2.4x at 18q, growing).
     if n_qubits <= 16:
         return "cpu"
-    if _MLX_AVAILABLE and n_qubits <= 31:
+    # MLX wins 17-30q, but its int32 ShapeElem rejects >=2**31 amplitudes, so it
+    # caps at 30q (Gate 0, docs/plan.md). The Metal backend uses 64-bit indexing
+    # and genuine in-place updates to reach 31-33q -- the only path past 30q.
+    if _MLX_AVAILABLE and n_qubits <= 30:
+        return "mlx"
+    if _METAL_AVAILABLE:
+        return "metal"
+    if _MLX_AVAILABLE and n_qubits <= 30:
         return "mlx"
     return "cpu"
 
@@ -32,7 +44,12 @@ def _make_backend(name: str, dtype: str, seed: int | None = None):
     if name == "mlx":
         from macquerel.backends.mlx_backend import MLXBackend
         return MLXBackend(seed=seed)
-    raise ValueError(f"Unknown backend: {name!r}. Choose 'cpu', 'mlx', or 'auto'.")
+    if name == "metal":
+        from macquerel.backends.metal_backend import MetalBackend
+        return MetalBackend(seed=seed)
+    raise ValueError(
+        f"Unknown backend: {name!r}. Choose 'cpu', 'mlx', 'metal', or 'auto'."
+    )
 
 
 class Simulator:

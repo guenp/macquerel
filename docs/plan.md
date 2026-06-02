@@ -375,13 +375,271 @@ Add a second compiler pass after gate fusion. The Doi–Horii technique: relabel
 
 `expectation_pauli(sv, pauli_strings)` — expectation value of a Pauli operator or sum of Pauli strings. For a single Pauli term `P` on qubit `q`: reshape state to `(2,)*n`, apply the Pauli matrix, take the inner product with the original state. For a sum, loop over terms.
 
-**Step 15: `MetalBackend` (`src/macquerel/backends/metal_backend.py` or a C extension)**
+**Step 15: `MetalBackend` — native compiled backend for the >31-qubit regime**
 
-A compiled extension using metal-cpp and nanobind. Hand-written `.metal` shaders with 64-bit (`size_t`) indexing to exceed the MLX `uint32` ceiling at 32 qubits. Genuine in-place updates (no double-buffering needed). Build system: scikit-build-core + CMake. For ≤31 qubits it offers no throughput advantage over the MLX kernel, so its only purpose is the >31-qubit regime.
+> **Status: IMPLEMENTED (2026-06-02).** Gate 0 = GO (outcome 1). Released MLX caps at
+> **≤30 qubits**; 31q+ is reachable only by a native backend. Built as a **PyObjC driver**
+> (`src/macquerel/backends/metal_backend.py`), not the metal-cpp + nanobind + scikit-build-core
+> extension this plan originally specified — that offline `.metal` → `.metallib` path is
+> unbuildable on the target machine (the Metal Toolchain CLI is missing and Xcode's downloader
+> is broken: `DVTDownloads.framework` absent, `-runFirstLaunch` fails). PyObjC reaches the same
+> goals with no build system: shaders compile at runtime via `newLibraryWithSource` (Metal
+> *framework* only), amplitudes live in one unified-memory `MTLBuffer` with 64-bit indexing,
+> updates are in-place. **Verified: runs 31q, 32q, and 33q** — the realistic 64 GiB ceiling,
+> using 64.06 GiB resident (16/32/64 GiB states, analytic GHZ spot-check exact), plus
+> differential-tested vs CPU to 1e-5, wired into auto-select (Metal ≥31q).
+> **Surprise result:** Metal also *beats* MLX from ~22q up (≈13× at 30q) because it avoids
+> MLX's double-buffering + gather temporaries under memory pressure — see `benchmark-3.png`.
+
+#### Rationale check (do this *before* writing any C++)
+
+The original premise was "MLX breaks at 32 qubits (uint32 element count), so we need a
+64-bit-indexed Metal kernel." Research in June 2026 sharpens and partly undercuts this:
+
+- The real ceiling is **2³¹ elements = 31 qubits**, not 2³². Root cause is
+  `ShapeElem = int32_t` in `mlx/array.h`: at ≥2³¹ amplitudes, shape/size math overflows to
+  negative and allocation wraps (MLX issue **#3327**, reported 2026-03-26). Our installed
+  **MLX 0.31.2 still has this bug** — so today MLX is effectively capped at **30 qubits**
+  for safety (31q is exactly on the cliff).
+- That issue was **closed by PR #3524 (merged 2026-05-21)** — but the PR **does NOT lift the
+  ceiling.** Its description states *"ShapeElem stays int32_t. No public API change."* It only
+  adds **overflow detection** (a clean `std::overflow_error` instead of silent corruption at
+  the 2³¹ boundary) and promotes some Metal kernel *offsets* to `size_t`. The 2³¹-element
+  limit remains, by design — so neither released MLX nor `main` reaches 31q. *(Verified by
+  reading the PR, 2026-06-02; corrects an earlier draft of this plan that assumed #3524
+  widened the type.)*
+
+**Action — gate 0 (½ day, blocking). ✅ DONE (2026-06-02).** Empirically probe the ceiling on
+this machine (`benchmarks/probe_mlx_ceiling.py`):
+
+```python
+# does MLX allocate, fill, gate, and read back a 2**n complex64 state without overflow?
+for n in (30, 31, 32, 33):
+    sv = mx.zeros(2**n, dtype=mx.complex64); sv = sv * 1.0; mx.eval(sv)
+```
+
+Decision tree (which outcome the backend's reason-to-exist hinges on):
+
+1. **If MLX still caps at ≤31q:** full justification — Metal is the only path to 32q+.
+2. **If MLX now reaches 32q+ but doubles memory** (its lazy graph + any gather temporaries):
+   Metal's edge is **capacity**, not speed — see the in-place argument below.
+3. **If MLX reaches 32q+ cleanly:** **recommend NOT building this backend.** Document the
+   finding, mark Step 15 obsolete, and redirect the effort to Step 13/16 polish or v0.3.
+   A hand-maintained Metal/Objective-C++ extension is a large permanent maintenance tax
+   that only pays off if it does something MLX cannot.
+
+**Outcome: (1).** See "Gate 0 — RESULTS" below for the data. Two follow-up checks were also
+resolved while running the gate:
+
+- *Is there a newer release that lifts it?* No — **0.31.2 is the latest on PyPI**.
+- *Would building MLX `main` help?* **No, and we did not need to build it to know.** PR #3524
+  (the only relevant change since) keeps `ShapeElem = int32_t` and merely *detects* the
+  overflow; it does not widen the type. `main` rejects 31q exactly like the release. Building
+  from source would be purely confirmatory (same 30q ceiling, cleaner error), so it was
+  **evaluated and skipped** rather than run.
+
+The spec itself already concedes (`§3`): *"MLX gets you to 90% of peak with 20% of the
+effort … a hand-written Metal kernel can't beat physics, it can only match it."* So this
+backend is **never about throughput** at equal qubit count — both saturate memory bandwidth.
+Its only possible wins are **(a) reach beyond MLX's index ceiling** and **(b) +1 qubit of
+capacity** from genuine in-place updates.
+
+#### Gate 0 — RESULTS (2026-06-02, this machine: M-series, 128 GB unified memory)
+
+Probe: `benchmarks/probe_mlx_ceiling.py` exercised allocate / scalar-multiply / `arange` /
+gather / readback on a `2ⁿ` complex64 state, each `n` in an isolated subprocess.
+
+| n | elements | complex64 size | result |
+|---|---|---|---|
+| 29 | 5.37e8 | 4 GiB | ✅ all ops OK |
+| 30 | 1.07e9 | 8 GiB | ✅ all ops OK |
+| 31 | 2.15e9 | 16 GiB | ❌ **rejected before allocation** |
+
+**The break is a hard type ceiling, not a memory limit.** At n=31 (`2³¹` elements) MLX
+0.31.2 raises `TypeError: zeros(): incompatible function arguments … Invoked with types: int`
+— the shape value `2³¹` does not fit MLX's **`int32` `ShapeElem`**, so the binding refuses
+the call *before any allocation is attempted*. Confirmed it is not an overload quirk:
+`mx.zeros((2**31,))` (tuple shape) and `mx.arange(2**31)` fail identically. This is exactly
+the `ShapeElem = int32_t` root cause of issue **#3327**, and it would reject 31q even on a
+machine with infinite RAM (the 16 GiB state fits this 128 GB box easily).
+
+**Released-MLX status:** the newest MLX on PyPI is **0.31.2** (release list ends
+`… 0.31.0, 0.31.1, 0.31.2`). Building from `main` does **not** help: PR #3524 keeps
+`ShapeElem = int32_t` and only adds overflow *detection* (see rationale check) — `main`
+rejects 31q just like 0.31.2, only with a cleaner error. So **no released or development MLX
+reaches 31q**; the ceiling is a deliberate upstream design choice, not a bug awaiting a fix.
+
+**Verdict: GO — outcome (1), and it is the only outcome on offer.** A native backend is the
+**only** way to reach 31q+ at all, now and for the foreseeable future — there is no "wait for
+the MLX fix" shortcut, because MLX has chosen to stay int32. This *strengthens* Step 15's
+justification versus the earlier draft:
+
+- **The full 31q+ regime is Metal-exclusive.** 31q (16 GiB), 32q (32 GiB), and 33q (64 GiB)
+  are all unreachable by MLX on this 128 GB machine and would each require the native backend.
+- On top of that, in-place updates add the **capacity / +1-qubit** edge: a realistic **33q on
+  this 128 GiB machine** (64 GiB state, in-place) vs MLX double-buffering's 32q, and 32q vs
+  31q on a 64 GB machine. (34q is byte-fit only — it would consume all RAM; see the capacity
+  table.)
+- Lifting the ceiling *inside* MLX (widening `ShapeElem` to int64 and submitting upstream) is
+  the design spec's open question `§11` and remains a theoretical alternative — but it is an
+  MLX-core change Apple has so far declined, not something we can pin today.
+- **Recommendation for review:** the only routes to 31q+ are (a) **build the Metal backend**
+  (this Step 15), or (b) **upstream an int64-`ShapeElem` change to MLX** (large, external,
+  uncertain acceptance). If 31q+ is a near-term goal, (a) is the realistic path. If it is not,
+  Step 15 can be **deferred** with no impact on ≤30q work — that is the genuine decision point,
+  not "wait for an MLX release."
+
+#### The capacity argument (why in-place matters)
+
+State is complex64 = 8 bytes/amplitude (stored SoA as two `float32` buffers that sum to the
+same 8 bytes/amp). MLX custom kernels cannot write back into their inputs — inputs are
+`const device` (issue **#2547**, still effectively unresolved as of 2026; the only workaround
+is a dummy/extra output), so every gate **double-buffers**: it reads one `2ⁿ×8` buffer and
+writes another. That doubling costs exactly one qubit of headroom.
+
+The table below is in **GiB** (`2ⁿ × 8` bytes; this 128 GB Mac reports `hw.memsize` ≈ 137 GB
+= **128 GiB**). Distinguish two ceilings: the *byte-fit* ceiling (does the buffer fit in
+nominal RAM at all?) and the *realistic* ceiling (does it fit with enough free memory for
+macOS, the Python process, and the Metal resident working set — a kernel can't run against
+swapped-out buffers, so the whole state must stay resident):
+
+| n | 1 state | MLX (double-buffered) | Metal (in-place) |
+|---|---|---|---|
+| 31 | 16 GiB | 32 GiB ✅ | 16 GiB ✅ |
+| 32 | 32 GiB | 64 GiB ✅ | 32 GiB ✅ |
+| 33 | 64 GiB | 128 GiB ⚠️ byte-fit only (= all RAM) | 64 GiB ✅ **realistic max** |
+| 34 | 128 GiB | 256 GiB ❌ impossible | 128 GiB ⚠️ byte-fit only (= all RAM) |
+
+**Realistic max on this 128 GiB machine: 33 qubits** with the in-place Metal backend (64 GiB
+state leaves 64 GiB for everything else). **34q is byte-fit only** — the state alone consumes
+100% of RAM, leaving nothing resident for the OS/runtime/Metal, so it would thrash and is not
+achievable in practice. The in-place backend's concrete payoff is therefore **33q vs MLX's
+32q** (MLX double-buffering needs 128 GiB for 33q = the same all-RAM wall), i.e. **+1 usable
+qubit**, plus the analogous 32q-vs-31q gain on a 64 GB machine.
+
+Two more constraints at the top end:
+- **Don't materialize the full statevector on the host.** `to_numpy()` at 33q allocates
+  *another* 64 GiB ndarray (also unified memory) → 128 GiB total, hitting the wall. So at
+  32–33q, **sample / measure / compute expectations on-device** and read back only small
+  results (the `§6.5` prepare-once/sample-many guarantee); full host readback for differential
+  testing is itself limited to ~**32q**, which is why the large-n test uses a subset-amplitude
+  check.
+- **Per-buffer limit.** SoA helps here: splitting into two `float32` buffers (each `2ⁿ × 4`)
+  keeps any single `MTLBuffer` at half the state size (e.g. 32 GiB each at 33q), comfortably
+  under `MTLDevice.maxBufferLength`. Verify `maxBufferLength` and
+  `recommendedMaxWorkingSetSize` on the target machine during the build skeleton (phase 2).
+
+#### Architecture (only if gate 0 says "build it")
+
+> **As-built note:** the design below (metal-cpp + nanobind + scikit-build-core + offline
+> `.metallib`) was the original target but was *not* built — the offline Metal Toolchain is
+> unavailable on the machine (see Status). The shipped backend is a **pure-Python PyObjC
+> driver** with the *same* kernel logic (SoA dropped in favour of one interleaved complex64
+> `MTLBuffer`, which is bit-identical to NumPy for zero-copy readback and still fits 33q at
+> 64 GiB < the 80.6 GiB `maxBufferLength` measured on this M5 Max). Two runtime-compiled
+> kernels: a per-amplitude `diagonal` fast path and a per-group `dense` kernel covering
+> dense/permutation/controlled. The 3D-grid 64-bit index reconstruction is unchanged from the
+> design. Keep the rest of this section for historical/design context.
+
+A native extension behind the existing `Backend` Protocol, so the simulator dispatches to it
+unchanged. State held as **two `MTLBuffer`s** (`real`, `imag` — SoA per `§5.2`; Metal has no
+native complex type, and separate streams coalesce on the M-series memory controller) aliased
+onto unified-memory allocations via `newBufferWithBytesNoCopy`, so there is genuinely no host
+copy. All index math is `size_t`/`uint64_t`.
+
+```
+macquerel/
+  src/macquerel/backends/
+    metal_backend.py        # thin Python wrapper: holds buffer handles, satisfies Backend
+  src_native/metalq/        # the extension
+    bindings.cpp            # nanobind module: allocate / apply_gate / gather / readback
+    engine.mm               # metal-cpp (Obj-C++): device, queue, pipeline cache, dispatch
+    kernels.metal           # compute shaders (compiled to .metallib at build time)
+    Metal.hpp               # vendored metal-cpp single header (header-only)
+  CMakeLists.txt            # scikit-build-core target + metallib compile step
+```
+
+**Build system.** Move packaging to **scikit-build-core + CMake** (replacing the
+pure-`hatchling` wheel) with **nanobind** for the bindings (the combo nanobind's own docs
+recommend; CMake ≥3.15, `nanobind_add_module`). metal-cpp is header-only — vendor the
+single-header `Metal.hpp` and define `NS_PRIVATE_IMPLEMENTATION` / `CA_PRIVATE_IMPLEMENTATION`
+/ `MTL_PRIVATE_IMPLEMENTATION` in exactly one `.mm`. CMake invokes `xcrun -sdk macosx metal`
+then `metallib` to compile `kernels.metal` → `default.metallib`, packaged alongside the
+extension and loaded with `newLibraryWithURL`. Keep the pure-Python wheel path working when
+the extension is absent: `metal_backend` import failure must degrade gracefully (MLX/CPU stay
+the default), exactly like the current optional `mlx` import.
+
+**Kernels** (mirror the MLX paths already validated, now in-place with 64-bit indices):
+
+- *Diagonal* (`§6.3`, highest value): one elementwise complex multiply, read-once/write-once,
+  no pairing, no stride problem — `out[i] = diag[gate_row(i)] * in[i]`, written in place.
+- *Permutation*: pure gather/index-bit rewrite, no arithmetic.
+- *Dense 1–2q (and fused k-q)*: the qHiPSTER `(i, i ⊕ 2ᵏ)` pairing loop — each thread owns
+  one amplitude group, loads `2ᵏ` SoA float pairs, applies the matrix, scatters back. For the
+  high-stride regime, stage a contiguous tile through `threadgroup` memory and permute on-chip
+  (`§4.3`/`§6.4`) to convert strided global access into contiguous.
+- *Controlled*: mask threads whose index doesn't satisfy the control bits (`§5.6`).
+
+Grid: a 1D grid can't address >2³² threads, so dispatch a **3D grid** (or one thread per
+`2ᵏ`-group with each thread striding) and reconstruct a `uint64` linear index from
+`thread_position_in_grid` — this is the actual mechanism that lifts the ceiling.
+
+In-place correctness: the pairing/diagonal kernels write each output element exactly once and
+read only their own group, so an in-place update over one buffer is race-free without
+double-buffering (the spec's own argument, `§5.4`).
+
+#### Implementation phases (as-built status)
+
+1. ✅ **Gate 0 — re-validate the ceiling** (above). GO.
+2. **~~Build skeleton~~ (obsolete):** no CMake/nanobind/metallib — PyObjC needs no build step.
+   The `metal` extra (`pyobjc-framework-Metal`) was added to `pyproject.toml`/`uv.lock`.
+3. ✅ **Allocate + readback:** `allocate(n)` → one unified-memory `MTLBuffer`; `to_numpy` is a
+   zero-copy `complex64` view. Differential-tested vs CPU.
+4. ✅ **Diagonal kernel** → differential test vs CPU (exact).
+5. ✅ **Permutation** → handled by the general dense kernel (a permutation matrix is dense),
+   differential-tested; in-place via the per-group structure (no gather race).
+6. ✅ **Dense group kernel** (1–4q fused) + **controlled** (control-bit mask) → differential
+   tested, including non-adjacent targets and a 12-seed random-circuit fuzz.
+7. ✅ **Wire into `_select_backend`** (Step 16): CPU ≤16q, MLX 17–30q, Metal ≥31q.
+8. ✅ **Large-n validation:** 31q and 32q GHZ spot-check on a subset of amplitudes matches the
+   analytic prediction exactly; in-place confirmed (single 1× buffer per state).
+
+#### Testing (`tests/test_metal_backend.py`)
+
+- Skip the whole module unless the extension imported (`pytest.importorskip`), like the MLX
+  tests — keeps CI green on machines without it / non-Apple.
+- **Differential vs CPU** to 1e-5 on the fuzzed random-circuit corpus (`§8`) — the single most
+  important test; catches indexing/stride/control-mask bugs. Reuse the existing CPU↔MLX
+  differential harness, adding Metal as a third backend.
+- Boundary tests: the 31→32 qubit switch, all-identity, max-controls, empty circuit.
+- A capped large-n test (env-gated, e.g. `MACQUEREL_BIG_TESTS=1`) so 32q+ runs are opt-in.
+
+#### Risks / decision triggers
+
+- **MLX widens `ShapeElem` to int64 upstream:** would obsolete the index-ceiling rationale,
+  leaving only the in-place +1-qubit edge. Gate 0 showed this has *not* happened (Apple
+  explicitly kept int32 in #3524), so it is a low-probability future risk, not current.
+- **Build/maintenance tax:** scikit-build-core + a `.metallib` step + metal-cpp churn is a
+  permanent cost on every contributor's machine and in CI. Only justified by a real capacity
+  win.
+- **~~At equal qubits it won't be faster~~ — refuted at large n.** The pre-build expectation
+  was that Metal would only match MLX's ms/gate (both bandwidth-bound). In practice Metal
+  *beats* MLX from ~22q up (≈13× at 30q, `benchmark-3.png`): MLX's per-gate double-buffering
+  and full-width gather temporaries thrash unified memory at 28–30q, while Metal's in-place
+  single-buffer path scales as the bandwidth-bound ideal (~2× per +1 qubit). Metal is slower
+  *below* ~20q (per-gate `waitUntilCompleted` sync vs MLX's lazy-graph fusion), so auto-select
+  keeps CPU ≤16q and MLX 17–30q. Success criteria — *running 31–33q at all* and *half the
+  memory of MLX* — both met (33q = 64 GiB in-place vs MLX's notional 128 GiB).
+- **Memory to test 33q** (64 GiB state) is fine on this 128 GiB machine, but a full host
+  readback (another 64 GiB) is not — plan for a subset-amplitude differential check rather
+  than full statevector equality at the top end. 34q is byte-fit only and not a test target.
 
 **Step 16: Automatic backend selection (`src/macquerel/simulator.py`)**
 
-When `backend='auto'` (make this the new default): select `CPUBackend` for ≤14 qubits (GPU launch overhead dominates), `MLXBackend` for 15–31 qubits, `MetalBackend` for ≥32 qubits. Requires MetalBackend (Step 15).
+When `backend='auto'` (the default): select `CPUBackend` for ≤16 qubits (GPU launch overhead
+dominates), `MLXBackend` for 17–30 qubits, `MetalBackend` for ≥31 qubits. **Done** — see
+`_select_backend` in `simulator.py`. MLX's tier ends at 30q (not 31q): its `int32` `ShapeElem`
+rejects `2**31` amplitudes, so 31q is the first Metal-only point.
 
 ---
 
