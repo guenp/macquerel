@@ -7,7 +7,7 @@
       22
     ],
     "depth": 50,
-    "reps": 3,
+    "reps": 9,
     "seed": 42,
     "json": "benchmarks/data/a17db04-baseline.json",
     "no_chart": true
@@ -16,34 +16,34 @@
     {
       "n_qubits": 16,
       "depth": 50,
-      "reps": 3,
-      "cpu_ms": 3.856,
-      "mlx_ms": 15.712,
-      "speedup": 0.245
+      "reps": 9,
+      "cpu_ms": 3.763,
+      "mlx_ms": 15.108,
+      "speedup": 0.249
     },
     {
       "n_qubits": 18,
       "depth": 50,
-      "reps": 3,
-      "cpu_ms": 14.354,
-      "mlx_ms": 32.523,
-      "speedup": 0.441
+      "reps": 9,
+      "cpu_ms": 13.987,
+      "mlx_ms": 32.267,
+      "speedup": 0.433
     },
     {
       "n_qubits": 20,
       "depth": 50,
-      "reps": 3,
-      "cpu_ms": 51.589,
-      "mlx_ms": 114.139,
-      "speedup": 0.452
+      "reps": 9,
+      "cpu_ms": 50.56,
+      "mlx_ms": 112.315,
+      "speedup": 0.45
     },
     {
       "n_qubits": 22,
       "depth": 50,
-      "reps": 3,
-      "cpu_ms": 300.211,
-      "mlx_ms": 354.208,
-      "speedup": 0.848
+      "reps": 9,
+      "cpu_ms": 297.617,
+      "mlx_ms": 353.644,
+      "speedup": 0.842
     }
   ]
 }

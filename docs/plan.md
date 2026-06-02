@@ -318,6 +318,22 @@ that widen the gap well beyond the floor.
   1.08×). **This refutes the spec's "SoA up to 6.9× over interleaved" claim on MLX 0.31** —
   the layouts are equivalent here, and complex64 is simpler (one array, one tensordot, no
   custom kernel). Targets cause (4).
+
+  > **Note — why complex64 can *look* slower at large n with low reps.** Recorded
+  > runs use `--reps 3` and report the min of 3. At 20–22 qubits the random circuit
+  > is **memory-bandwidth-bound**, and a complex64 amplitude is 8 bytes = exactly two
+  > float32 (the SoA `real`+`imag`), so **both layouts move identical bytes per gate** —
+  > theory predicts parity, and the workload has essentially no dense multi-qubit gates,
+  > so complex64's one-tensordot-vs-four advantage never triggers. The genuine
+  > SoA↔complex64 difference at large n is therefore **below the benchmark's noise
+  > floor**: GPU clock/thermal variance across process launches swings a *single*
+  > configuration's 22q time by ~10–15% (one SoA run measured 44.8 ms, another 51.4 ms).
+  > With only 3 samples the min can land on a lucky-fast SoA run and an ordinary
+  > complex64 run, making complex64 look ~0.85×; a different pair of runs reverses it.
+  > Higher reps (9+) and interleaved measurement (both backends in one process, sharing
+  > thermal state) collapse the gap to parity. The large-n dip in the committed plots is
+  > measurement noise, not a real regression; complex64's real win is on dense/fused
+  > circuits (`bench_circuits`), which `bench_backends` does not exercise.
 - **Step P5 — Avoid the full transpose copy via einsum (medium impact). ❌ TRIED & REVERTED
   (`b4b0171` → `50d3d54`).** Replaced `tensordot`+`transpose` in `_dense_apply` with a single
   canonical-order `einsum`. A/B on `bench_circuits` @18q showed einsum **slower** on every

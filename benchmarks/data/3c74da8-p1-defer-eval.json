@@ -7,7 +7,7 @@
       22
     ],
     "depth": 50,
-    "reps": 3,
+    "reps": 9,
     "seed": 42,
     "json": "benchmarks/data/3c74da8-p1-defer-eval.json",
     "no_chart": true
@@ -16,34 +16,34 @@
     {
       "n_qubits": 16,
       "depth": 50,
-      "reps": 3,
-      "cpu_ms": 3.741,
-      "mlx_ms": 8.575,
-      "speedup": 0.436
+      "reps": 9,
+      "cpu_ms": 3.804,
+      "mlx_ms": 7.608,
+      "speedup": 0.5
     },
     {
       "n_qubits": 18,
       "depth": 50,
-      "reps": 3,
-      "cpu_ms": 13.958,
-      "mlx_ms": 26.18,
-      "speedup": 0.533
+      "reps": 9,
+      "cpu_ms": 13.813,
+      "mlx_ms": 25.027,
+      "speedup": 0.552
     },
     {
       "n_qubits": 20,
       "depth": 50,
-      "reps": 3,
-      "cpu_ms": 50.74,
-      "mlx_ms": 94.35,
-      "speedup": 0.538
+      "reps": 9,
+      "cpu_ms": 50.624,
+      "mlx_ms": 93.43,
+      "speedup": 0.542
     },
     {
       "n_qubits": 22,
       "depth": 50,
-      "reps": 3,
-      "cpu_ms": 291.125,
-      "mlx_ms": 314.808,
-      "speedup": 0.925
+      "reps": 9,
+      "cpu_ms": 292.686,
+      "mlx_ms": 307.397,
+      "speedup": 0.952
     }
   ]
 }
