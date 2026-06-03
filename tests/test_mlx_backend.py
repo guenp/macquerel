@@ -71,3 +71,90 @@ def test_ghz(mlx_backend):
     assert abs(sv[0] - inv_sqrt2) < 1e-5
     assert abs(sv[7] - inv_sqrt2) < 1e-5
     assert np.allclose(sv[1:7], 0, atol=1e-5)
+
+
+def _monomial(perm, phases):
+    """Build a (2^k x 2^k) monomial matrix: row j has its single nonzero
+    (value phases[j]) in column perm[j]."""
+    d = len(perm)
+    m = np.zeros((d, d), dtype=np.complex64)
+    for j in range(d):
+        m[j, perm[j]] = phases[j]
+    return m
+
+
+def test_permutation_non_involution(cpu, mlx_backend):
+    """A composed permutation (CX then CX) is NOT self-inverse. The gather path
+    must use the forward source map, not its inverse — regression for a bug where
+    only involutions (X/SWAP/CNOT) were handled correctly."""
+    cx01 = np.kron(g.CNOT(), np.eye(2, dtype=np.complex64))  # CX on (0,1) of 3q
+    cx12 = np.kron(np.eye(2, dtype=np.complex64), g.CNOT())  # CX on (1,2) of 3q
+    fused = (cx12 @ cx01).astype(np.complex64)
+    assert g.classify(fused) == "permutation"
+    assert not np.allclose(fused @ fused, np.eye(8), atol=1e-6)  # not an involution
+
+    for targets in ([0, 1, 2], [2, 3, 4]):
+        n = max(targets) + 1
+        rng = np.random.default_rng(0)
+        psi = (rng.standard_normal(2**n) + 1j * rng.standard_normal(2**n)).astype(np.complex64)
+        psi /= np.linalg.norm(psi)
+        sc = cpu.allocate(n)
+        sc[:] = psi
+        ref = np.asarray(cpu.apply_matrix(sc, fused, targets, None)).ravel()
+        sm = mlx_backend.allocate(n)
+        sm.data = mlx.array(psi)
+        got = mlx_backend.to_numpy(mlx_backend.apply_matrix(sm, fused, targets, None)).ravel()
+        diff = np.max(np.abs(ref - got))
+        assert np.allclose(ref, got, atol=1e-5), f"targets={targets} diff={diff}"
+
+
+def test_permutation_with_phase(cpu, mlx_backend):
+    """A phased monomial matrix (e.g. fused CX·Rz) classifies as 'permutation'
+    but its nonzero entries carry phase — the fast path must apply that phase,
+    not just gather. Regression for dropped phases on fused diagonal+perm gates."""
+    perm = [0, 1, 3, 2]  # CX-like swap of last two basis states
+    phases = np.exp(1j * np.array([0.0, 0.3, -0.7, 1.1])).astype(np.complex64)
+    mono = _monomial(perm, phases)
+    assert g.classify(mono) == "permutation"
+
+    n = 4
+    targets = [1, 2]
+    rng = np.random.default_rng(1)
+    psi = (rng.standard_normal(2**n) + 1j * rng.standard_normal(2**n)).astype(np.complex64)
+    psi /= np.linalg.norm(psi)
+    sc = cpu.allocate(n)
+    sc[:] = psi
+    ref = np.asarray(cpu.apply_matrix(sc, mono, targets, None)).ravel()
+    sm = mlx_backend.allocate(n)
+    sm.data = mlx.array(psi)
+    got = mlx_backend.to_numpy(mlx_backend.apply_matrix(sm, mono, targets, None)).ravel()
+    assert np.allclose(ref, got, atol=1e-5), f"diff={np.max(np.abs(ref - got))}"
+
+
+def test_fused_random_circuit_differential(cpu, mlx_backend):
+    """End-to-end: random circuits run through the fusion compiler must agree
+    CPU vs MLX. Fusion produces composed/phased permutation gates that the
+    per-gate tests above target in isolation."""
+    from macquerel import Circuit
+    from macquerel.compiler import fuse_gates
+
+    for seed in range(5):
+        rng = np.random.default_rng(seed)
+        n = 6
+        c = Circuit(n)
+        for _ in range(20):
+            for q in range(n):
+                gate = rng.choice(["rx", "ry", "rz"])
+                getattr(c, gate)(q, float(rng.uniform(0, 2 * np.pi)))
+            for q in range(0, n - 1, 2):
+                c.cx(q, q + 1)
+        fc = fuse_gates(c)
+        sc = cpu.allocate(n)
+        sm = mlx_backend.allocate(n)
+        for gate in fc.ops:
+            ctrls = getattr(gate, "controls", None) or None
+            sc = cpu.apply_matrix(sc, gate.matrix, gate.targets, ctrls)
+            sm = mlx_backend.apply_matrix(sm, gate.matrix, gate.targets, ctrls)
+        ref = np.asarray(sc).ravel()
+        got = mlx_backend.to_numpy(sm).ravel()
+        assert np.allclose(ref, got, atol=1e-5), f"seed={seed} diff={np.max(np.abs(ref - got))}"

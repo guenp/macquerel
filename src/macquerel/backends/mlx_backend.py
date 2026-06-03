@@ -127,26 +127,37 @@ class MLXBackend:
         return MLXState(data=new_data, n_qubits=n)
 
     def _apply_permutation(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
-        """Permutation gate: pure gather — no multiply/add needed.
+        """Monomial (generalized-permutation) gate: gather + per-row phase.
+
+        `classify` labels any matrix with exactly one magnitude-1 nonzero per
+        row/col as "permutation" — this includes *phased* monomial matrices such
+        as a fused CX·(Rz⊗Rz), whose nonzero entries are complex phases, not 1.
+        So the gather alone is not enough: each gathered amplitude must also be
+        multiplied by the value of its nonzero matrix entry. (A pure permutation
+        like X/SWAP/CNOT has all-1 phases, so the multiply is a no-op there.)
 
         The gather index array is built entirely on-device with mx.arange +
         bitwise ops, so there is no host-side O(2**n) NumPy table build and no
-        host->device copy per gate. The only host work is the tiny 2**k
-        inverse-permutation lookup over the target subspace.
+        host->device copy per gate. The only host work is over the tiny 2**k
+        target subspace.
         """
         n = sv.n_qubits
         size = 2**n
         k = len(targets)
 
-        # Small (2**k)-element permutation on the target subspace:
-        # gate_perm[input_row] -> output_row (matches the dense argmax mapping).
+        # Per-output-row source map on the (2**k) target subspace. For a monomial
+        # matrix M, out[j] = M[j, i] * in[i] where i = argmax(|M[j]|) is the one
+        # nonzero column of row j. The gather kernel does new[idx] = old[src[idx]],
+        # so this row map is used directly — no inversion. (Inverting only happened
+        # to match for involutions like X / SWAP / CNOT, which are self-inverse;
+        # a fused CX·CX is not, which is why composed permutations were wrong.)
         gate_perm = np.array(
             [int(np.argmax(np.abs(matrix[r]))) for r in range(2**k)],
-            dtype=np.int64,
+            dtype=np.uint32,
         )
-        # Gather needs the inverse: which input row feeds a given output row.
-        inv_gate_perm = np.empty(2**k, dtype=np.uint32)
-        inv_gate_perm[gate_perm] = np.arange(2**k, dtype=np.uint32)
+        # The nonzero entry of each row — the phase to apply after the gather.
+        row_phase = matrix[np.arange(2**k), gate_perm].astype(np.complex64)
+        has_phase = not np.allclose(row_phase, 1.0, atol=1e-6)
 
         indices = self._arange(n)
         one = self._one
@@ -157,8 +168,8 @@ class MLXBackend:
             bit = (indices >> (n - 1 - t)) & one
             out_row = out_row | (bit << (k - 1 - j))
 
-        # Map each output row to its source row via the inverse permutation.
-        in_row = mx.array(inv_gate_perm)[out_row]
+        # Map each output row to its source input row.
+        in_row = mx.array(gate_perm)[out_row]
 
         # Source index = output index with its target bits rewritten to in_row.
         src = indices
@@ -169,6 +180,9 @@ class MLXBackend:
             src = (src & clear_mask) | (bit << shift)
 
         new_data = self._perm_kernel(sv.data, src)
+        if has_phase:
+            # Multiply each amplitude by its row's nonzero entry (phase gather).
+            new_data = mx.array(row_phase)[out_row] * new_data
         return MLXState(data=new_data, n_qubits=n)
 
     def _dense_apply(

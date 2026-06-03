@@ -78,7 +78,9 @@ known-first-party = ["macquerel"]
 "tests/**" = ["RUF012", "E402"]
 # Benchmark scripts are throwaway harnesses: long lines, inline lambdas, and
 # unused locals (kept for readability of the swept parameters) are fine.
-"benchmarks/**" = ["E501", "E731", "F841", "RUF001"]
+# bench_statevector.py uses compact one-line `if name == ...: call()` dispatch
+# tables (E701) for the per-framework gate adapters.
+"benchmarks/**" = ["E501", "E701", "E731", "F841", "RUF001"]
 "tests/benchmarks/**" = ["E501", "E731", "F841", "RUF001"]
 
 # ---- Type checking: ty (Astral's type checker) ----
