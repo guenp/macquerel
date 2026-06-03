@@ -31,6 +31,9 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 
@@ -265,21 +268,30 @@ def _make_qulacs():
     return build_and_run
 
 
-def discover_backends(requested: list[str] | None, double: bool) -> list[Backend]:
-    specs = {
-        "macquerel-cpu": lambda: _make_macquerel("cpu", double),
-        "macquerel-mlx": lambda: _make_macquerel("mlx", double),
-        "macquerel-metal": lambda: _make_macquerel("metal", double),
-        "aer": _make_aer,
-        "qulacs": _make_qulacs,
-    }
-    if requested:
-        specs = {k: v for k, v in specs.items() if k in requested}
+ALL_BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal", "aer", "qulacs"]
 
+
+def make_backend(name: str, double: bool):
+    """Build the build_and_run callable for a backend by name."""
+    if name == "macquerel-cpu":
+        return _make_macquerel("cpu", double)
+    if name == "macquerel-mlx":
+        return _make_macquerel("mlx", double)
+    if name == "macquerel-metal":
+        return _make_macquerel("metal", double)
+    if name == "aer":
+        return _make_aer()
+    if name == "qulacs":
+        return _make_qulacs()
+    raise ValueError(f"unknown backend {name}")
+
+
+def discover_backends(requested: list[str] | None, double: bool) -> list[Backend]:
+    names = requested or ALL_BACKENDS
     backends: list[Backend] = []
-    for name, factory in specs.items():
+    for name in names:
         try:
-            fn = factory()
+            fn = make_backend(name, double)
             backends.append(Backend(name=name, build_and_run=fn))
         except Exception as e:
             backends.append(
@@ -299,6 +311,100 @@ def time_run(fn, ops, n, reps: int) -> float:
         fn(ops, n)
         best = min(best, time.perf_counter() - t0)
     return best
+
+
+# Sentinel the parent process greps for in a worker's stdout.
+_RESULT_TAG = "__BENCH_RESULT__"
+
+
+def run_worker(args) -> int:
+    """Worker mode: time a single (backend, circuit, n) cell and print the result.
+
+    Run as its own process so each measurement starts from a clean slate — no
+    GPU memory pool, lazy graph, or resident statevector left over from another
+    backend. At 30q a statevector is 8-16 GiB, so timing several backends in one
+    process lets an earlier backend's retained memory push a later one into
+    swap/compression and produce wildly inflated (and unrepeatable) numbers.
+    """
+    fn = make_backend(args.backend, args.double)
+    ops = GENERATORS[args.circuit](args.n)
+    secs = time_run(fn, ops, args.n, args.reps)
+    print(f"{_RESULT_TAG} {secs!r}")
+    return 0
+
+
+def measure_isolated(name, circuit, n, reps, double, timeout) -> float:
+    """Time one cell in a fresh subprocess; raises on failure/timeout."""
+    cmd = [
+        sys.executable,
+        os.path.abspath(__file__),
+        "--worker",
+        "--backend",
+        name,
+        "--circuit",
+        circuit,
+        "--n",
+        str(n),
+        "--reps",
+        str(reps),
+    ]
+    if double:
+        cmd.append("--double")
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        msg = (proc.stderr.strip().splitlines() or ["worker exited nonzero"])[-1]
+        raise RuntimeError(msg[:120])
+    for line in proc.stdout.splitlines():
+        if line.startswith(_RESULT_TAG):
+            return float(line.split(maxsplit=1)[1])
+    raise RuntimeError("worker produced no result")
+
+
+# ----------------------------------------------------------------------------
+# Memory budget — refuse to launch a cell that could exhaust RAM and hang/crash
+# the whole machine. The estimate is deliberately pessimistic: it is a safety
+# gate, not an accounting tool. Better to SKIP a cell that might have fit than to
+# drive the box into swap.
+# ----------------------------------------------------------------------------
+#
+# A 2**n statevector is `bytes_per_amp * 2**n`. The multipliers below are the
+# observed peak-to-base ratio of each backend's *transient* footprint:
+#   - metal:  in-place single buffer + tiny scratch                  -> ~1.6x
+#   - aer/qulacs: complex128 state + a result/copy                   -> ~2.5x
+#   - cpu:    tensordot allocates reshaped + transposed copies       -> ~4x
+#   - mlx:    lazy graph holds many full-width intermediates at once,
+#             plus a pool cache it never returns to the OS. Calibrated
+#             from the fact that mlx @ 30q (8 GiB base) drove a 128 GiB
+#             machine into swap, i.e. peak >= ~16x base for deep circuits.
+_PEAK_MULT = {
+    "macquerel-cpu": 4.0,
+    "macquerel-mlx": 16.0,
+    "macquerel-metal": 1.6,
+    "aer": 2.5,
+    "qulacs": 2.5,
+}
+
+
+def _system_ram_gib() -> float:
+    """Total physical RAM in GiB (sysctl on macOS, /proc on Linux); safe fallback."""
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
+            return int(out.strip()) / 1024**3
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / 1024**2  # kB -> GiB
+    except Exception:
+        pass
+    return 16.0  # conservative fallback if we cannot tell
+
+
+def est_peak_gib(name: str, n: int, double: bool) -> float:
+    """Pessimistic peak-memory estimate for one (backend, n) cell, in GiB."""
+    bytes_per_amp = 16 if (double or not name.startswith("macquerel")) else 8
+    base = bytes_per_amp * (2**n)
+    return base * _PEAK_MULT.get(name, 4.0) / 1024**3
 
 
 @dataclass
@@ -330,8 +436,42 @@ def main():
     )
     ap.add_argument("--json", default=None, help="save raw results to this path")
     ap.add_argument("--plot", default="bench_results.png", help="output chart path")
+    ap.add_argument(
+        "--no-isolate",
+        action="store_true",
+        help="time all backends in this process instead of one subprocess per cell "
+        "(faster startup, but large-n numbers are unreliable — see run_worker)",
+    )
+    ap.add_argument(
+        "--timeout",
+        type=float,
+        default=1800.0,
+        help="per-cell subprocess timeout in seconds (isolated mode only)",
+    )
+    ap.add_argument(
+        "--mem-budget-frac",
+        type=float,
+        default=0.45,
+        help="skip any cell whose estimated peak memory exceeds this fraction of "
+        "system RAM (safety gate against swapping/crashing the machine)",
+    )
+    ap.add_argument(
+        "--max-mem-gib",
+        type=float,
+        default=None,
+        help="absolute peak-memory cap per cell in GiB (overrides --mem-budget-frac if smaller)",
+    )
+    # Worker mode (internal): time a single cell and print the result.
+    ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--backend", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--circuit", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--n", type=int, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
+    if args.worker:
+        return run_worker(args)
+
+    isolate = not args.no_isolate
     backends = discover_backends(args.backends, args.double)
     live = [b for b in backends if b.available]
     print("Backends:")
@@ -343,28 +483,57 @@ def main():
         return
     print()
 
+    mode = "subprocess-isolated" if isolate else "in-process (--no-isolate)"
+    ram = _system_ram_gib()
+    budget = ram * args.mem_budget_frac
+    if args.max_mem_gib is not None:
+        budget = min(budget, args.max_mem_gib)
+    print(f"Timing mode: {mode}")
+    print(f"System RAM: {ram:.0f} GiB | per-cell memory budget: {budget:.0f} GiB\n")
+
+    def checkpoint():
+        if args.json:
+            import json
+
+            with open(args.json, "w") as f:
+                json.dump(results.data, f, indent=2)
+
     results = Results()
     for circuit in args.circuits:
         gen = GENERATORS[circuit]
         print(f"== {circuit} ==")
         for n in args.qubits:
             ops = gen(n)
-            row = f"  n={n:<3d}"
+            # Each cell is logged + checkpointed as it finishes, so a long sweep
+            # that is interrupted (kill / OOM) still leaves every completed cell
+            # on disk and on screen.
             for b in live:
+                est = est_peak_gib(b.name, n, args.double)
+                if est > budget:
+                    print(
+                        f"  {circuit:7s} n={n:<3d} {b.name:16s} "
+                        f"SKIP (est ~{est:.0f} GiB > {budget:.0f} GiB budget)",
+                        flush=True,
+                    )
+                    continue
                 try:
-                    secs = time_run(b.build_and_run, ops, n, args.reps)
+                    if isolate:
+                        secs = measure_isolated(
+                            b.name, circuit, n, args.reps, args.double, args.timeout
+                        )
+                    else:
+                        secs = time_run(b.build_and_run, ops, n, args.reps)
                     results.add(circuit, b.name, n, secs)
-                    row += f"  {b.name}={secs * 1e3:8.2f}ms"
+                    checkpoint()
+                    cell = f"{secs * 1e3:8.2f}ms"
+                except subprocess.TimeoutExpired:
+                    cell = "TIMEOUT"
                 except Exception as e:
-                    row += f"  {b.name}=ERR({str(e)[:30]})"
-            print(row)
+                    cell = f"ERR({str(e)[:40]})"
+                print(f"  {circuit:7s} n={n:<3d} {b.name:16s} {cell}", flush=True)
         print()
 
     if args.json:
-        import json
-
-        with open(args.json, "w") as f:
-            json.dump(results.data, f, indent=2)
         print(f"Raw data -> {args.json}")
 
     make_plot(results, args.circuits, args.plot)
