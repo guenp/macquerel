@@ -28,7 +28,6 @@ nav = [
 [project.theme]
 language = "en"
 logo = "assets/logo.png"
-favicon = "assets/logo.png"
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme: light)"
