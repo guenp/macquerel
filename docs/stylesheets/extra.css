@@ -1,0 +1,15 @@
+/* Size the header logo a little above the default (~1.2rem). */
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.5rem;
+  width: auto;
+}
+
+/* Snug the title up to the logo without overlapping it. */
+.md-header__button.md-logo {
+  padding-right: 0.2rem;
+}
+
+.md-header__title {
+  margin-left: 0;
+}
