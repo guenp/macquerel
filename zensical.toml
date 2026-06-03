@@ -10,6 +10,8 @@ repo_url = "https://github.com/guenp/macquerel"
 repo_name = "GitHub"
 edit_uri = "edit/main/docs"
 
+extra_css = ["stylesheets/extra.css"]
+
 nav = [
   { "Home" = "index.md" },
   { "Getting Started" = "getting-started.md" },
@@ -25,6 +27,7 @@ nav = [
 
 [project.theme]
 language = "en"
+logo = "assets/logo.png"
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme: light)"
