@@ -60,10 +60,15 @@ class Simulator:
         backend: str = "auto",
         dtype: str = "complex64",
         seed: int | None = None,
+        batch_shots: int | str = "auto",
     ) -> None:
         self.backend_name = backend
         self.dtype = dtype
         self._seed = seed
+        # Shot-batch size handed to the backend's sampler. "auto" lets a GPU
+        # backend autotune the mx.random.categorical batch (Step 19); an int
+        # pins it. Ignored by the host (NumPy) samplers.
+        self.batch_shots = batch_shots
         self._np_dtype = np.complex64 if dtype == "complex64" else np.complex128
         self._backend = None if backend == "auto" else _make_backend(backend, dtype, seed)
 
@@ -102,7 +107,9 @@ class Simulator:
             sv = backend.allocate(circuit.n_qubits, self._np_dtype)
             for gate in current_gates:
                 sv = backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
-            return backend.sample(sv, list(range(circuit.n_qubits)), shots)
+            return backend.sample(
+                sv, list(range(circuit.n_qubits)), shots, batch_shots=self.batch_shots
+            )
 
         sv = backend.allocate(circuit.n_qubits, self._np_dtype)
         outcome_bitstrings: list[Counter] = []
@@ -110,7 +117,7 @@ class Simulator:
         for gates, meas_qubits in zip(segments, measurements, strict=True):
             for gate in gates:
                 sv = backend.apply_matrix(sv, gate.matrix, gate.targets, gate.controls or None)
-            counts = backend.sample(sv, meas_qubits, shots)
+            counts = backend.sample(sv, meas_qubits, shots, batch_shots=self.batch_shots)
             outcome_bitstrings.append(counts)
 
         for gate in current_gates:

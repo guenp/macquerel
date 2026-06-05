@@ -158,3 +158,49 @@ def test_fused_random_circuit_differential(cpu, mlx_backend):
         ref = np.asarray(sc).ravel()
         got = mlx_backend.to_numpy(sm).ravel()
         assert np.allclose(ref, got, atol=1e-5), f"seed={seed} diff={np.max(np.abs(ref - got))}"
+
+
+# --- Step 19: shot-batch autotuning / batched sampling ---
+
+
+def _bell_state(backend):
+    sv = backend.allocate(2)
+    sv = backend.apply_matrix(sv, g.H(), [0])
+    sv = backend.apply_matrix(sv, g.CNOT(), [0, 1])
+    return sv
+
+
+def test_mlx_sample_autotune_distribution(mlx_backend):
+    """Unseeded 'auto' batching draws the right total and a ~50/50 Bell split."""
+    sv = _bell_state(mlx_backend)
+    shots = 8000
+    counts = mlx_backend.sample(sv, [0, 1], shots, batch_shots="auto")
+    assert sum(counts.values()) == shots
+    assert set(counts) <= {"00", "11"}
+    assert 0.4 < counts["00"] / shots < 0.6
+    # The tuned batch size is memoized for this category count (2**2 = 4).
+    assert mlx_backend._tuned_batch.get(4)
+
+
+def test_mlx_sample_explicit_batch_chunks(mlx_backend):
+    """An explicit batch smaller than shots forces multiple chunks; total holds."""
+    sv = _bell_state(mlx_backend)
+    shots = 5000
+    counts = mlx_backend.sample(sv, [0, 1], shots, batch_shots=512)
+    assert sum(counts.values()) == shots
+    assert set(counts) <= {"00", "11"}
+
+
+def test_mlx_sample_seed_reproducible():
+    """Seeded MLX sampling is reproducible for a fixed batch_shots setting."""
+    # Default "auto" path: single deterministic pass when seeded.
+    a = MLXBackend(seed=5)
+    b = MLXBackend(seed=5)
+    assert a.sample(_bell_state(a), [0, 1], 1000) == b.sample(_bell_state(b), [0, 1], 1000)
+
+    # Explicit chunked batch is also reproducible (deterministic per-chunk subkeys).
+    c = MLXBackend(seed=5)
+    d = MLXBackend(seed=5)
+    assert c.sample(_bell_state(c), [0, 1], 1000, batch_shots=128) == d.sample(
+        _bell_state(d), [0, 1], 1000, batch_shots=128
+    )

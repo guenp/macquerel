@@ -70,6 +70,38 @@ def test_seed_reproducibility():
     assert s1 == s2, f"Seeded runs differ: {s1} vs {s2}"
 
 
+def test_batch_shots_default_is_auto():
+    assert Simulator(backend="cpu").batch_shots == "auto"
+
+
+def test_batch_shots_explicit_int_runs_correctly():
+    """An explicit batch_shots must not change the total shot count or validity."""
+    qc = Circuit(3)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.cx(1, 2)
+    qc.measure_all()
+
+    sim = Simulator(backend="cpu", batch_shots=128)
+    result = sim.run(qc, shots=1000)
+    assert sum(result.values()) == 1000
+    assert set(result) <= {"000", "111"}
+
+
+def test_batch_shots_seed_reproducible():
+    """Seeded runs stay reproducible across batch_shots settings (single-pass path)."""
+    qc = Circuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure_all()
+
+    a = Simulator(backend="cpu", seed=7, batch_shots="auto").run(qc, shots=300)
+    b = Simulator(backend="cpu", seed=7, batch_shots=64).run(qc, shots=300)
+    # CPU draws all shots in one np.random.choice regardless of batch_shots,
+    # so a fixed seed yields identical counts either way.
+    assert a == b
+
+
 def test_auto_backend_default():
     circuit = Circuit(2)
     circuit.h(0)

@@ -55,6 +55,9 @@ class MLXBackend:
         self._one = mx.array(1, dtype=mx.uint32)
         self._arange_cache: dict[int, mx.array] = {}
         self._classify_cache: dict[tuple, str] = {}
+        # Step 19: autotuned shot-batch size for mx.random.categorical, memoized
+        # by category count (2**len(qubits)); see _autotune_batch / sample.
+        self._tuned_batch: dict[int, int] = {}
         # P8: compile the hot elementwise kernels so MLX fuses the gather +
         # arithmetic into one kernel and caches the trace per input shape.
         self._diag_kernel = mx.compile(_diag_phase_kernel)
@@ -271,11 +274,56 @@ class MLXBackend:
             mx.eval(sv.data)
         return outcomes
 
+    def _autotune_batch(self, log_probs: mx.array, shots: int) -> int:
+        """Pick the mx.random.categorical batch size that maximizes throughput.
+
+        Doubles the batch from a 1024-shot base and times one draw at each size,
+        stopping when shots/sec stops improving (the Tsim doubling heuristic).
+        GPU sampling is dispatch-bound for tiny batches, so throughput climbs
+        with batch size and then plateaus once the launch cost is amortized.
+        """
+        import time
+
+        bs = 1024
+        cap = max(shots, 1024)
+        best_bs, best_tput = bs, 0.0
+        while bs <= cap:
+            # Warm draw first so kernel compilation is not charged to the timing.
+            warm = mx.random.categorical(log_probs, num_samples=bs)
+            mx.eval(warm)
+            t0 = time.perf_counter()
+            s = mx.random.categorical(log_probs, num_samples=bs)
+            mx.eval(s)
+            dt = time.perf_counter() - t0
+            tput = bs / dt if dt > 0 else float("inf")
+            if tput >= best_tput * 1.05:  # >5% gain counts as still improving
+                best_tput, best_bs = tput, bs
+                bs *= 2
+            else:
+                break
+        return best_bs
+
+    def _resolve_batch(
+        self, batch_shots, log_probs: mx.array, num_categories: int, shots: int
+    ) -> int:
+        if batch_shots != "auto":
+            return max(1, int(batch_shots))
+        # A seeded run draws in a single deterministic pass so results are
+        # reproducible regardless of the (timing-dependent) tuned batch size.
+        if self._rng_key is not None:
+            return max(1, shots)
+        cached = self._tuned_batch.get(num_categories)
+        if cached is None:
+            cached = self._autotune_batch(log_probs, shots)
+            self._tuned_batch[num_categories] = cached
+        return cached
+
     def sample(
         self,
         sv: MLXState,
         qubits: list[int],
         shots: int,
+        batch_shots: int | str = "auto",
     ) -> Counter:
         n = sv.n_qubits
         mx.eval(sv.data)
@@ -288,19 +336,36 @@ class MLXBackend:
         joint = np.transpose(joint, qubits_in_state_order)
         flat_probs = joint.reshape(-1)
         flat_probs = flat_probs / flat_probs.sum()
+        num_categories = flat_probs.size
 
         log_probs = mx.log(mx.array(flat_probs.astype(np.float32)) + 1e-38)
-        if self._rng_key is not None:
-            samples = mx.random.categorical(log_probs, num_samples=shots, key=self._rng_key)
-        else:
-            samples = mx.random.categorical(log_probs, num_samples=shots)
-        mx.eval(samples)
-        indices = np.array(samples)
+        batch = self._resolve_batch(batch_shots, log_probs, num_categories, shots)
 
+        num_chunks = (shots + batch - 1) // batch
+        if self._rng_key is not None:
+            # One chunk reuses the base key (so single-pass output is unchanged);
+            # multiple chunks get deterministic per-chunk subkeys.
+            subkeys = (
+                [self._rng_key]
+                if num_chunks == 1
+                else list(mx.random.split(self._rng_key, num_chunks))
+            )
+        else:
+            subkeys = [None] * num_chunks
+
+        width = len(qubits)
         result: Counter = Counter()
-        for idx in indices:
-            bits = format(int(idx), f"0{len(qubits)}b")
-            result[bits] += 1
+        remaining = shots
+        for i in range(num_chunks):
+            b = min(batch, remaining)
+            if subkeys[i] is not None:
+                samples = mx.random.categorical(log_probs, num_samples=b, key=subkeys[i])
+            else:
+                samples = mx.random.categorical(log_probs, num_samples=b)
+            mx.eval(samples)
+            for idx in np.array(samples):
+                result[format(int(idx), f"0{width}b")] += 1
+            remaining -= b
         return result
 
     def abs2sum(self, sv: MLXState, qubits: list[int]) -> np.ndarray:
