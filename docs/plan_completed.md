@@ -344,5 +344,45 @@ Implemented the bulk of the §9 benchmark plan:
 - ✅ **Metal-specific benchmarks + plots** (`bench_metal.py`, `plot_metal.py`,
   `plot_results.py`).
 
-> Remaining benchmark gaps (Quantum Volume macrobenchmark, qsim CPU comparison) are tracked
-> in [`plan.md`](plan.md).
+> The remaining §9 gaps (Quantum Volume macrobenchmark, qsim CPU comparison) shipped in the
+> **v0.2** line — see below.
+
+---
+
+## v0.2 — autotuning + benchmark completion
+
+### Step 18 (completed): Benchmarking suite gaps
+
+Closed the two outstanding §9 items from the v0.1 benchmarking suite:
+
+- ✅ **Quantum Volume macrobenchmark** (`bench_circuits.py`): Haar-random SU(4) model
+  circuit (depth = n), added to the swept circuit set alongside QFT/random/QAOA/dense.
+  Exercises the worst-case dense (non-diagonal, non-permutation) path.
+- ✅ **qsim CPU comparison** (`bench_statevector.py`): a qsim (`qsimcirq`) statevector
+  adapter in the cross-simulator harness, alongside Qiskit Aer and qulacs. Degrades
+  gracefully when `qsimcirq` is absent (it has no prebuilt wheel for Python 3.14).
+- ✅ **Companion tests** (`tests/test_known_circuits.py`): QV normalization + exact-inverse
+  identity known-answer tests, and a random-circuit-sampling spot check that shot
+  frequencies track |ψ|².
+
+### Step 19: Shot batch-size autotuning (`src/macquerel/simulator.py`)
+
+`Simulator` gained a `batch_shots` parameter (default `"auto"`), threaded through to each
+backend's `sample()` (and added to the `Backend` Protocol). The MLX backend autotunes the
+`mx.random.categorical` batch size by doubling from a 1024-shot base until throughput
+plateaus (Tsim heuristic), memoized per category count (`2**len(qubits)`). An explicit int
+pins the batch and draws in chunks with deterministic per-chunk subkeys; a seeded `"auto"`
+run draws in a single deterministic pass so results stay reproducible. CPU/Metal accept the
+kwarg for interface parity (host NumPy sampling has nothing to tune).
+
+### Step 20: Per-chip fusion-width autotuning (`src/macquerel/compiler.py`)
+
+`fuse_gates(max_fused_qubits=None)` resolves the width from `autotune_fusion_width()`, which
+measures the optimal `max_fused_qubits` on the local chip once and caches it
+(`~/.cache/macquerel/fusion_width.json` + in-memory). The sweep (widths 1–6 on a
+representative QFT) times fuse+apply on the **throughput-critical** backend — MLX when
+available, at a qubit count where it is selected; CPU otherwise — because the fusion-width
+trade-off (costlier composition vs fewer kernel launches) is a GPU-dispatch effect that
+the CPU reference does not exhibit. `MACQUEREL_FUSION_WIDTH` pins the width and skips
+measuring; measurement failures fall back to the documented default of 4 and never raise on
+the hot path.
