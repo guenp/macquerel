@@ -1,9 +1,10 @@
 import numpy as np
 
+import macquerel.compiler as compiler
 import macquerel.gates as g
 from macquerel.backends.cpu import CPUBackend
 from macquerel.circuit import Circuit, Gate, MeasureOp
-from macquerel.compiler import fuse_gates, remap_qubits
+from macquerel.compiler import autotune_fusion_width, fuse_gates, remap_qubits
 
 
 def _run_statevector(circuit: Circuit) -> np.ndarray:
@@ -151,3 +152,64 @@ def test_remap_preserves_distribution():
             f"Probability mismatch at remapped={idx}, orig={orig_idx}: "
             f"{probs_remap[idx]} vs {probs_orig[orig_idx]}"
         )
+
+
+# --- Step 20: per-chip fusion-width autotuning ---
+
+
+def test_autotune_env_override(monkeypatch):
+    """MACQUEREL_FUSION_WIDTH pins the width and skips any measurement."""
+    monkeypatch.setattr(compiler, "_FUSION_WIDTH_CACHE", None)
+    monkeypatch.setenv("MACQUEREL_FUSION_WIDTH", "3")
+    assert autotune_fusion_width() == 3
+
+
+def test_autotune_measures_and_caches(monkeypatch, tmp_path):
+    """With no override, the width is measured once and persisted to disk."""
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    monkeypatch.setattr(compiler, "_FUSION_WIDTH_CACHE", None)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    width = autotune_fusion_width(force=True)
+    assert width in range(1, 7)
+
+    cache = tmp_path / "macquerel" / "fusion_width.json"
+    assert cache.exists()
+
+    # A second call (no force) returns the same value without re-measuring.
+    called = {"n": 0}
+    real = compiler._measure_fusion_width
+
+    def _spy(*a, **k):
+        called["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(compiler, "_measure_fusion_width", _spy)
+    monkeypatch.setattr(compiler, "_FUSION_WIDTH_CACHE", None)  # force disk read path
+    assert autotune_fusion_width() == width
+    assert called["n"] == 0  # served from the on-disk cache, no measurement
+
+
+def test_autotune_measure_fallback_on_error(monkeypatch, tmp_path):
+    """A measurement failure falls back to the default width, never raises."""
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    monkeypatch.setattr(compiler, "_FUSION_WIDTH_CACHE", None)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    def _boom(*a, **k):
+        raise RuntimeError("measurement blew up")
+
+    monkeypatch.setattr(compiler, "_measure_fusion_width", _boom)
+    assert autotune_fusion_width(force=True) == compiler._DEFAULT_FUSION_WIDTH
+
+
+def test_fuse_gates_uses_autotuned_width(monkeypatch):
+    """fuse_gates() with no width argument resolves to the autotuned value."""
+    monkeypatch.setattr(compiler, "autotune_fusion_width", lambda: 2)
+    qc = Circuit(5)
+    for i in range(5):
+        qc.h(i)
+    fused = fuse_gates(qc)  # width 2 -> H gates fuse in pairs
+    widths = [len(op.targets) + len(op.controls) for op in fused.ops if isinstance(op, Gate)]
+    assert max(widths) <= 2
+    assert sum(widths) == 5
