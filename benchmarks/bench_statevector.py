@@ -6,6 +6,7 @@ Runs identical circuits (QFT, random, QAOA, GHZ) through:
   - macquerel  (CPU, MLX, and/or Metal backend — Apple Silicon)
   - Qiskit Aer (statevector method)
   - Qulacs
+  - qsim       (Google's CPU statevector simulator, via qsimcirq)
 
 and reports wall-clock statevector-build time vs qubit count, then charts it.
 
@@ -268,7 +269,56 @@ def _make_qulacs():
     return build_and_run
 
 
-ALL_BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal", "aer", "qulacs"]
+def _make_qsim():
+    import cirq
+    import qsimcirq
+
+    sim = qsimcirq.QSimSimulator()
+
+    def build_and_run(ops, n):
+        q = cirq.LineQubit.range(n)
+        circuit = cirq.Circuit()
+        for op in ops:
+            name = op[0]
+            if name == "h":
+                circuit.append(cirq.H(q[op[1]]))
+            elif name == "x":
+                circuit.append(cirq.X(q[op[1]]))
+            elif name == "y":
+                circuit.append(cirq.Y(q[op[1]]))
+            elif name == "z":
+                circuit.append(cirq.Z(q[op[1]]))
+            elif name == "s":
+                circuit.append(cirq.S(q[op[1]]))
+            elif name == "t":
+                circuit.append(cirq.T(q[op[1]]))
+            # cirq.rx/ry/rz use exp(-i theta/2 P), same convention as qiskit.
+            elif name == "rx":
+                circuit.append(cirq.rx(op[2])(q[op[1]]))
+            elif name == "ry":
+                circuit.append(cirq.ry(op[2])(q[op[1]]))
+            elif name == "rz":
+                circuit.append(cirq.rz(op[2])(q[op[1]]))
+            elif name == "p":
+                # phase gate diag(1, e^{i lam}) == Z**(lam/pi)
+                circuit.append(cirq.ZPowGate(exponent=op[2] / math.pi)(q[op[1]]))
+            elif name == "cx":
+                circuit.append(cirq.CNOT(q[op[1]], q[op[2]]))
+            elif name == "cz":
+                circuit.append(cirq.CZ(q[op[1]], q[op[2]]))
+            elif name == "swap":
+                circuit.append(cirq.SWAP(q[op[1]], q[op[2]]))
+            elif name == "cp":
+                circuit.append(cirq.CZPowGate(exponent=op[3] / math.pi)(q[op[1]], q[op[2]]))
+            else:
+                raise ValueError(f"unknown op {name}")
+        result = sim.simulate(circuit)
+        return result.final_state_vector
+
+    return build_and_run
+
+
+ALL_BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal", "aer", "qulacs", "qsim"]
 
 
 def make_backend(name: str, double: bool):
@@ -283,6 +333,8 @@ def make_backend(name: str, double: bool):
         return _make_aer()
     if name == "qulacs":
         return _make_qulacs()
+    if name == "qsim":
+        return _make_qsim()
     raise ValueError(f"unknown backend {name}")
 
 
@@ -382,6 +434,7 @@ _PEAK_MULT = {
     "macquerel-metal": 1.6,
     "aer": 2.5,
     "qulacs": 2.5,
+    "qsim": 2.5,
 }
 
 
@@ -426,7 +479,7 @@ def main():
         "--backends",
         nargs="+",
         default=None,
-        help="subset of: macquerel-cpu macquerel-mlx macquerel-metal aer qulacs",
+        help="subset of: macquerel-cpu macquerel-mlx macquerel-metal aer qulacs qsim",
     )
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument(
