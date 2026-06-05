@@ -184,7 +184,7 @@ step was decided by A/B benchmark on the harness rather than implemented blind.
 
 ---
 
-## v0.2 — Metal backend, qubit remapping, expectation values
+## Metal backend, qubit remapping, expectation values
 
 ### Step 13: Qubit remapping / cache-blocking compiler pass (`compiler.py`)
 
@@ -305,7 +305,7 @@ its `int32` `ShapeElem` rejects `2**31` amplitudes.
 
 ---
 
-## v0.2 test additions (`tests/`)
+## Test additions (`tests/`)
 
 - ✅ `test_compiler.py` — remapping equivalence (remap on/off yields identical
   distributions).
@@ -319,7 +319,7 @@ its `int32` `ShapeElem` rejects `2**31` amplitudes.
 
 ---
 
-## v0.3
+## Cirq/Qiskit adapters
 
 ### Step 17: Cirq/Qiskit front-end adapters (`src/macquerel/adapters/`)
 
@@ -329,7 +329,7 @@ circuits run unmodified on macquerel backends. Tested in `tests/test_adapters.py
 
 ---
 
-## v1.0
+## Benchmarking suite
 
 ### Step 18: Benchmarking suite (`benchmarks/`)
 

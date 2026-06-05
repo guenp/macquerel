@@ -1,17 +1,17 @@
 # macquerel Implementation Plan — Remaining Work
 
 macquerel is a quantum state-vector simulator targeting Apple Silicon's unified-memory
-architecture. The v0.1 → v0.3 milestones (CPU/MLX/Metal backends, gate fusion + qubit
-remapping, expectation values, automatic backend selection, Cirq/Qiskit adapters) and the
-core benchmarking suite are **complete** — see [`plan_completed.md`](plan_completed.md) for
-the shipped record, including the MLX/Metal performance findings.
+architecture. The v0.1 line (CPU/MLX/Metal backends, gate fusion + qubit remapping,
+expectation values, automatic backend selection, Cirq/Qiskit adapters, and the core
+benchmarking suite) is **complete** — see [`plan_completed.md`](plan_completed.md) for the
+shipped record, including the MLX/Metal performance findings.
 
 This document tracks only work that has **not** been implemented yet. Steps keep their
 original numbering for continuity with the completed record.
 
 ---
 
-## v1.0
+## v0.2
 
 ### Step 18 (remaining): Benchmarking suite gaps (`benchmarks/`)
 
@@ -24,7 +24,7 @@ outstanding from the §9 plan:
 - **qsim CPU comparison** — add a qsim statevector backend to the `bench_statevector.py`
   comparison harness (currently only Qiskit Aer and qulacs).
 
-Companion test gap (from the v0.2 test additions): add Quantum Volume circuits and
+Companion test gap (from the v0.1 test additions): add Quantum Volume circuits and
 random-circuit-sampling spot checks to `tests/test_known_circuits.py`.
 
 ### Step 19: Shot batch-size autotuning (`src/macquerel/simulator.py`)
@@ -40,7 +40,7 @@ the `max_fused_qubits` value that maximises throughput, rather than hardcoding 4
 
 ---
 
-## v2
+## v0.3
 
 - **Noise channels / density matrices** — `DensityMatrixSimulator` with Kraus-operator
   channels.
