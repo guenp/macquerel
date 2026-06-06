@@ -130,7 +130,7 @@ depth-50 random circuit at 22 qubits identified these root causes:
    every call.
 4. **SoA real/imag split** turned each complex multiply into 3–4 real kernels.
 5. **Full transpose+copy per dense gate** in `_dense_apply`.
-6. **`bench_backends.py` does not fuse** (deliberate — measures raw per-gate throughput).
+6. **The old raw backend benchmark did not fuse** (deliberate - it measured per-gate throughput).
 7. **Minor per-gate host overhead** (`classify`, `astype`).
 
 **Optimizations (ranked, as shipped):**
@@ -149,8 +149,8 @@ depth-50 random circuit at 22 qubits identified these root causes:
 - **P4 — Native `complex64` storage. ✅ DONE (`1eb61db`).** State is now a single complex64
   array: one complex tensordot instead of four real ones, one complex gather for
   diagonal/permutation, and the SoA-only Metal 1q kernel dropped. A/B vs SoA: neutral on
-  `bench_backends` (1.01–1.04× at 18–22q), faster on dense/fused (`bench_circuits` @20q:
-  dense 1.16×, QFT 1.08×). **This refutes the spec's "SoA up to 6.9× over interleaved"
+  the raw backend benchmark (1.01-1.04× at 18-22q), faster on dense/fused circuits at 20q:
+  dense 1.16×, QFT 1.08×. **This refutes the spec's "SoA up to 6.9× over interleaved"
   claim on MLX 0.31** — the layouts are equivalent here, and complex64 is simpler. Targets
   cause (4).
 
@@ -168,8 +168,8 @@ depth-50 random circuit at 22 qubits identified these root causes:
   workload at 18q (QFT 5.3→6.2, QAOA 2.8→4.2, dense 21.3→26.2 ms): MLX's `einsum`
   decomposes to a costlier sequence than `tensordot`+`transpose`. Premise false on MLX 0.31.
 - **P6 — Fuse before MLX dispatch. ✅ ALREADY SATISFIED.** The simulator already runs the
-  fusion pass on the hot path (`statevector()` / `run()`). `bench_backends.py` deliberately
-  stays unfused. No code change needed.
+  fusion pass on the hot path (`statevector()` / `run()`). The historical raw backend
+  benchmark deliberately stayed unfused. No code change needed.
 - **P7 — Re-tune the auto-select crossover. ✅ DONE (`351376c`).** `_select_backend` routes
   ≤16 qubits to CPU (was ≤14) and MLX for 17–31, matching the measured crossover.
 - **P8 — `mx.compile` the hot gate kernels. ✅ DONE (`b6bef6f`).** Compiled the diagonal
@@ -333,19 +333,16 @@ circuits run unmodified on macquerel backends. Tested in `tests/test_adapters.py
 
 ### Step 18: Benchmarking suite (`benchmarks/`)
 
-Implemented the bulk of the §9 benchmark plan:
+The maintained suite was consolidated around the benchmarks that are still used:
 
-- ✅ **API-level microbenchmarks** (`bench_single_gate.py`): single-gate throughput vs
-  target index and qubit count, reported as GB/s vs theoretical peak.
-- ✅ **Circuit-level macrobenchmarks** (`bench_circuits.py`): QFT, random circuit sampling,
-  QAOA layers, swept across qubit counts, plus the `max_fused_qubits ∈ {1..6}` sweep.
-- ✅ **Comparison harness** (`bench_statevector.py`): vs Qiskit Aer (statevector) and qulacs,
-  with endianness/precision/convention handling.
-- ✅ **Metal-specific benchmarks + plots** (`bench_metal.py`, `plot_metal.py`,
-  `plot_results.py`).
+- ✅ **Framework comparison** (`bench_statevector.py`): macquerel CPU/MLX/Metal vs
+  Qiskit Aer and Qulacs, with endianness/precision/convention handling.
+- ✅ **Fusion-width sweep** (`bench_fusion_width.py`): QFT, random, QAOA, and Quantum
+  Volume circuits swept over `max_fused_qubits ∈ {1..6}`.
+- ✅ **Released-version regression checks** (`bench_versions.py`, `plot_versions.py`):
+  compare CPU/MLX/Metal across PyPI releases and the current checkout.
 
-> The remaining §9 gaps (Quantum Volume macrobenchmark, qsim CPU comparison) shipped in the
-> **v0.2** line — see below.
+> Quantum Volume benchmark coverage shipped in the **v0.2** line - see below.
 
 ---
 
@@ -355,12 +352,11 @@ Implemented the bulk of the §9 benchmark plan:
 
 Closed the two outstanding §9 items from the v0.1 benchmarking suite:
 
-- ✅ **Quantum Volume macrobenchmark** (`bench_circuits.py`): Haar-random SU(4) model
+- ✅ **Quantum Volume macrobenchmark** (`bench_fusion_width.py`): Haar-random SU(4) model
   circuit (depth = n), added to the swept circuit set alongside QFT/random/QAOA/dense.
   Exercises the worst-case dense (non-diagonal, non-permutation) path.
-- ✅ **qsim CPU comparison** (`bench_statevector.py`): a qsim (`qsimcirq`) statevector
-  adapter in the cross-simulator harness, alongside Qiskit Aer and qulacs. Degrades
-  gracefully when `qsimcirq` is absent (it has no prebuilt wheel for Python 3.14).
+- ✅ **Framework comparison cleanup** (`bench_statevector.py`): macquerel backends run
+  alongside Qiskit Aer and Qulacs, and optional frameworks degrade gracefully when absent.
 - ✅ **Companion tests** (`tests/test_known_circuits.py`): QV normalization + exact-inverse
   identity known-answer tests, and a random-circuit-sampling spot check that shot
   frequencies track |ψ|².

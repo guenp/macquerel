@@ -97,23 +97,30 @@ MLX backend tests are automatically skipped when MLX is not installed.
 Quick smoke run (completes in a few seconds):
 
 ```bash
-uv run python tests/benchmarks/bench_backends.py --qubits 10 14 --reps 1
+uv run python benchmarks/bench_versions.py --versions latest --backends cpu --qubits 6 8 --depth 8 --reps 1
 ```
 
-Full benchmarks (may take several minutes at 24+ qubits):
+Full benchmark commands:
 
 ```bash
-# CPU vs MLX backend — random circuits, various qubit counts
-uv run python tests/benchmarks/bench_backends.py
+# macquerel CPU/MLX/Metal vs Qiskit Aer and Qulacs
+uv run python benchmarks/bench_statevector.py \
+  --json benchmarks/data/framework_comparison.json \
+  --plot benchmarks/data/framework_comparison.png
 
-# Single-gate throughput (GB/s)
-uv run python benchmarks/bench_single_gate.py
+# Fusion-width sweep
+uv run python benchmarks/bench_fusion_width.py \
+  --json benchmarks/data/fusion_width.json \
+  --plot benchmarks/data/fusion_width.png
 
-# QFT, random, QAOA circuits + fusion-width sweep
-uv run python benchmarks/bench_circuits.py
+# Released-version regression comparison for CPU/MLX/Metal
+uv run python benchmarks/bench_versions.py \
+  --versions latest --json benchmarks/data/version_regression.json \
+  --plot benchmarks/data/version_regression.png
 ```
 
-All scripts print results live as each configuration completes. Pass `--json FILE` to save results for later comparison.
+Install `uv sync --extra viz` before regenerating plots. Optional frameworks and Apple-only
+backends are reported as skipped when they are unavailable.
 
 ## Requirements
 

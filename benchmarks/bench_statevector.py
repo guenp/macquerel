@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-bench_statevector.py — cross-simulator statevector benchmark harness.
+bench_statevector.py - framework comparison statevector benchmark harness.
 
 Runs identical circuits (QFT, random, QAOA, GHZ) through:
-  - macquerel  (CPU, MLX, and/or Metal backend — Apple Silicon)
+  - macquerel  (CPU, MLX, and/or Metal backend - Apple Silicon)
   - Qiskit Aer (statevector method)
   - Qulacs
-  - qsim       (Google's CPU statevector simulator, via qsimcirq)
 
 and reports wall-clock statevector-build time vs qubit count, then charts it.
 
@@ -16,11 +15,13 @@ from the same gate set that macquerel supports
 (H, X, Y, Z, S, T, Rx, Ry, Rz, P, CX, CZ, SWAP, CP).
 
 Usage:
-    python bench_statevector.py                          # full sweep, all backends found
-    python bench_statevector.py --qubits 8 12 16 20      # custom qubit counts
-    python bench_statevector.py --circuits qft random    # subset of circuits
-    python bench_statevector.py --backends macquerel-mlx aer   # subset of backends
-    python bench_statevector.py --reps 5 --json out.json # more reps + save raw data
+    uv run python benchmarks/bench_statevector.py
+    uv run python benchmarks/bench_statevector.py --qubits 8 12 16 20
+    uv run python benchmarks/bench_statevector.py --circuits qft random
+    uv run python benchmarks/bench_statevector.py --backends macquerel-mlx aer
+    uv run python benchmarks/bench_statevector.py --reps 5 \
+        --json benchmarks/data/framework_comparison.json \
+        --plot benchmarks/data/framework_comparison.png
 
 Precision note: macquerel defaults to complex64 (single precision); Qiskit Aer and
 Qulacs use complex128 (double). Single precision is ~2x lighter on memory bandwidth,
@@ -31,12 +32,14 @@ complex128 for a like-for-like comparison.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -269,56 +272,7 @@ def _make_qulacs():
     return build_and_run
 
 
-def _make_qsim():
-    import cirq
-    import qsimcirq
-
-    sim = qsimcirq.QSimSimulator()
-
-    def build_and_run(ops, n):
-        q = cirq.LineQubit.range(n)
-        circuit = cirq.Circuit()
-        for op in ops:
-            name = op[0]
-            if name == "h":
-                circuit.append(cirq.H(q[op[1]]))
-            elif name == "x":
-                circuit.append(cirq.X(q[op[1]]))
-            elif name == "y":
-                circuit.append(cirq.Y(q[op[1]]))
-            elif name == "z":
-                circuit.append(cirq.Z(q[op[1]]))
-            elif name == "s":
-                circuit.append(cirq.S(q[op[1]]))
-            elif name == "t":
-                circuit.append(cirq.T(q[op[1]]))
-            # cirq.rx/ry/rz use exp(-i theta/2 P), same convention as qiskit.
-            elif name == "rx":
-                circuit.append(cirq.rx(op[2])(q[op[1]]))
-            elif name == "ry":
-                circuit.append(cirq.ry(op[2])(q[op[1]]))
-            elif name == "rz":
-                circuit.append(cirq.rz(op[2])(q[op[1]]))
-            elif name == "p":
-                # phase gate diag(1, e^{i lam}) == Z**(lam/pi)
-                circuit.append(cirq.ZPowGate(exponent=op[2] / math.pi)(q[op[1]]))
-            elif name == "cx":
-                circuit.append(cirq.CNOT(q[op[1]], q[op[2]]))
-            elif name == "cz":
-                circuit.append(cirq.CZ(q[op[1]], q[op[2]]))
-            elif name == "swap":
-                circuit.append(cirq.SWAP(q[op[1]], q[op[2]]))
-            elif name == "cp":
-                circuit.append(cirq.CZPowGate(exponent=op[3] / math.pi)(q[op[1]], q[op[2]]))
-            else:
-                raise ValueError(f"unknown op {name}")
-        result = sim.simulate(circuit)
-        return result.final_state_vector
-
-    return build_and_run
-
-
-ALL_BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal", "aer", "qulacs", "qsim"]
+ALL_BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal", "aer", "qulacs"]
 
 
 def make_backend(name: str, double: bool):
@@ -333,8 +287,6 @@ def make_backend(name: str, double: bool):
         return _make_aer()
     if name == "qulacs":
         return _make_qulacs()
-    if name == "qsim":
-        return _make_qsim()
     raise ValueError(f"unknown backend {name}")
 
 
@@ -434,7 +386,6 @@ _PEAK_MULT = {
     "macquerel-metal": 1.6,
     "aer": 2.5,
     "qulacs": 2.5,
-    "qsim": 2.5,
 }
 
 
@@ -476,10 +427,7 @@ def main():
     ap.add_argument("--qubits", type=int, nargs="+", default=[6, 8, 10, 12, 14, 16, 18, 20])
     ap.add_argument("--circuits", nargs="+", default=list(GENERATORS), choices=list(GENERATORS))
     ap.add_argument(
-        "--backends",
-        nargs="+",
-        default=None,
-        help="subset of: macquerel-cpu macquerel-mlx macquerel-metal aer qulacs qsim",
+        "--backends", nargs="+", default=None, help="subset of: " + " ".join(ALL_BACKENDS)
     )
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument(
@@ -488,7 +436,9 @@ def main():
         help="force macquerel to complex128 for like-for-like precision",
     )
     ap.add_argument("--json", default=None, help="save raw results to this path")
-    ap.add_argument("--plot", default="bench_results.png", help="output chart path")
+    ap.add_argument(
+        "--plot", default="benchmarks/data/framework_comparison.png", help="output chart path"
+    )
     ap.add_argument(
         "--no-isolate",
         action="store_true",
@@ -544,12 +494,26 @@ def main():
     print(f"Timing mode: {mode}")
     print(f"System RAM: {ram:.0f} GiB | per-cell memory budget: {budget:.0f} GiB\n")
 
+    def payload() -> dict:
+        return {
+            "benchmark": "framework_comparison",
+            "config": {
+                "qubits": args.qubits,
+                "circuits": args.circuits,
+                "backends": args.backends or ALL_BACKENDS,
+                "reps": args.reps,
+                "double": args.double,
+                "isolate": isolate,
+                "mem_budget_gib": budget,
+            },
+            "results": results.data,
+        }
+
     def checkpoint():
         if args.json:
-            import json
-
-            with open(args.json, "w") as f:
-                json.dump(results.data, f, indent=2)
+            path = Path(args.json)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload(), indent=2))
 
     results = Results()
     for circuit in args.circuits:
