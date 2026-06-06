@@ -71,6 +71,36 @@ benchmark touches only one amplitude to flush (a full `to_numpy` would add a
 second 64 GiB copy and exhaust the 128 GiB), matching the plan's on-device
 large-n guidance.
 
+## Fusion width (Step 20)
+
+`fusion_width.json` / `fusion_width.png` are produced by
+`benchmarks/bench_fusion_width.py`, which sweeps `max_fused_qubits` ∈ 1..6 across
+qubit counts and circuits, timing the real Simulator cost model (fuse + apply).
+It explains **why macquerel defaults to `max_fused_qubits=4`**.
+
+The optimal width **drifts upward with qubit count**: small n is composition-bound
+(narrow fusion wins), large n is apply-bound (wide fusion wins, fewer passes over
+the `2**n` state). Best width per cell, MLX on Apple M5 Max (`fusion_width.json`):
+
+| circuit | 18q | 20q | 22q | 24q |
+|---|---|---|---|---|
+| QFT | 2 | 3 | 5 | 6 |
+| random | 2 | 3 | 6 | 6 |
+| QAOA | 2 | 3 | 4 | 6 |
+| QV | 3 | 4 | 5 | 6 |
+
+No single width is best everywhere, but the **normalized aggregate** across the
+17-30q MLX tier (each cell scaled by its own fastest width) bottoms out at **4**:
+
+| width | 1 | 2 | 3 | **4** | 5 | 6 |
+|---|---|---|---|---|---|---|
+| mean (time / per-cell best) | 1.99 | 1.69 | 1.45 | **1.26** | 1.44 | 2.33 |
+
+So 4 is within a few percent of optimal at every n and the aggregate winner — the
+robust zero-config default. A naive autotuner that measured a single small-n point
+instead picked 2 and regressed the large-n path by up to ~2×; see the write-up:
+<https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327>.
+
 ## Results summary
 
 MLX runtime (ms) on the depth-50 random circuit, baseline → latest (P4), reps 9:
