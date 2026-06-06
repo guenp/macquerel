@@ -5,6 +5,44 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-06
+
+### Added
+
+- Add Quantum Volume macrobenchmarks using Haar-random SU(4) model circuits.
+- Add `qsimcirq` support to the cross-simulator statevector benchmark harness, with graceful
+  degradation when qsim is not installed.
+- Add `Simulator(batch_shots=...)` and backend `sample(..., batch_shots=...)` support. MLX
+  sampling can autotune `mx.random.categorical` batch size, while explicit integer values pin
+  chunk size.
+- Add opt-in fusion-width autotuning via `MACQUEREL_FUSION_WIDTH=auto`, with in-memory and
+  disk caching. The zero-config fusion default remains width 4.
+- Add a fusion-width sweep benchmark and committed plot/data showing why width 4 is the
+  normalized aggregate default across the measured MLX tier.
+- Add Quantum Volume, random-circuit-sampling, MLX batched-sampling, and fusion-width
+  resolver/autotuner tests.
+- Add `docs/plan_completed.md` and reorganize the implementation plan so `docs/plan.md`
+  tracks only remaining v0.3 work.
+
+### Changed
+
+- Improve `bench_statevector.py` with subprocess-isolated timing, memory-budget skips,
+  per-cell logging, and JSON checkpointing so large-qubit benchmark runs do not contaminate
+  later measurements or drive the host into swap.
+- Regenerate cross-simulator and fusion-width benchmark artifacts with corrected isolated
+  measurements.
+- Extend the backend protocol and CPU/Metal samplers to accept `batch_shots` for interface
+  parity.
+
+### Fixed
+
+- Fix MLX permutation handling for composed non-involutive permutation gates produced by
+  fusion.
+- Fix MLX monomial/permutation handling so phased permutation matrices preserve their row
+  phases instead of doing a phase-dropping gather.
+- Validate non-positive fusion widths: explicit `fuse_gates(..., max_fused_qubits=...)`
+  values now raise, while invalid env/cache values fall back safely.
+
 ## [0.1.1] - 2026-06-02
 
 ### Fixed
@@ -26,6 +64,7 @@ All notable changes to this project are documented here, following
 - Gate-fusion compiler and diagonal/permutation/dense gate classification.
 - Cirq and Qiskit import adapters (optional extras).
 
-[Unreleased]: https://github.com/guenp/macquerel/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/guenp/macquerel/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/guenp/macquerel/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/guenp/macquerel/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/guenp/macquerel/releases/tag/v0.1.0
