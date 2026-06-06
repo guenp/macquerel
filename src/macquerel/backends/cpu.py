@@ -119,7 +119,11 @@ class CPUBackend:
         sv: np.ndarray,
         qubits: list[int],
         shots: int,
+        batch_shots: int | str = "auto",
     ) -> Counter:
+        # batch_shots is accepted for interface parity with the GPU backends
+        # (Step 19). NumPy draws all shots in one np.random.choice call, so
+        # there is no per-launch overhead to amortize and nothing to tune.
         n = int(np.log2(len(sv)))
         state = sv.reshape((2,) * n)
         probs2 = np.abs(state) ** 2

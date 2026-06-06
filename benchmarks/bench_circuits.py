@@ -1,5 +1,6 @@
 """
-Circuit-level macrobenchmarks: QFT, random circuit sampling, QAOA layers.
+Circuit-level macrobenchmarks: QFT, random circuit sampling, QAOA layers,
+Quantum Volume.
 
 Also sweeps max_fused_qubits ∈ {1..6} to validate the fusion-width trade-off.
 
@@ -87,6 +88,36 @@ def _build_qaoa(n: int, layers: int = 3) -> Circuit:
     return qc
 
 
+def _haar_special_unitary(dim: int, rng: np.random.Generator) -> np.ndarray:
+    """Haar-random special unitary of size dim via QR of a complex Ginibre matrix."""
+    z = (rng.normal(size=(dim, dim)) + 1j * rng.normal(size=(dim, dim))) / np.sqrt(2.0)
+    q, r = np.linalg.qr(z)
+    # Fix the phase ambiguity so the result is genuinely Haar-distributed.
+    ph = np.diagonal(r) / np.abs(np.diagonal(r))
+    u = q * ph
+    return u * np.linalg.det(u) ** (-1 / dim)
+
+
+def _build_quantum_volume(n: int, depth: int | None = None, seed: int = 23) -> Circuit:
+    """Quantum Volume model circuit (square: depth = n by default).
+
+    Each layer applies a random permutation of the qubits, pairs them up, and
+    applies a Haar-random 2-qubit (SU(4)) gate to each pair. These dense 4x4
+    gates exercise the general dense path and fuse poorly, so QV is the natural
+    stress test for the worst-case (non-diagonal, non-permutation) workload.
+    """
+    rng = np.random.default_rng(seed)
+    d = depth if depth is not None else n
+    qc = Circuit(n)
+    for _ in range(d):
+        perm = rng.permutation(n)
+        for i in range(0, n - 1, 2):
+            a, b = int(perm[i]), int(perm[i + 1])
+            u = _haar_special_unitary(4, rng).astype(np.complex64)
+            qc._add("su4", u, [a, b])
+    return qc
+
+
 def _build_dense_layers(n: int, layers: int = 40, seed: int = 7) -> Circuit:
     """Dense parallel-friendly circuit: full rotation walls + brick-wall entanglers.
 
@@ -126,6 +157,7 @@ def benchmark(qubit_counts: list[int], reps: int, depth: int) -> dict:
             "QFT": _build_qft(n),
             "random": _build_random(n, depth),
             "QAOA": _build_qaoa(n),
+            "QV": _build_quantum_volume(n),
             "dense": _build_dense_layers(n),
         }
         for circuit_name, circuit in circuits.items():

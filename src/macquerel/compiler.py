@@ -1,11 +1,182 @@
 from __future__ import annotations
 
+import json
+import os
+import time
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 
 from macquerel.circuit import Circuit, Gate, MeasureOp
 from macquerel.gates import classify
+
+# ---------------------------------------------------------------------------
+# Fusion width: a robust default of 4, with opt-in per-chip autotuning (Step 20)
+# ---------------------------------------------------------------------------
+# Wider fusion means fewer, larger gate applications (less Python/dispatch
+# overhead) but a more expensive matrix composition and a larger dense apply.
+# The catch is that the optimum *drifts with qubit count*: small n is
+# composition-bound and favors narrow fusion, large n is apply-bound and favors
+# wide. There is no single best width across the range, but width 4 is the
+# aggregate-normalized winner across the measured 17-30q regime. See the
+# ideal-width table on `fuse_gates` and the benchmark write-up:
+#   https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327
+#
+# So 4 is the zero-config default — no measurement on the hot path. Autotuning
+# is opt-in via MACQUEREL_FUSION_WIDTH: a positive int pins the width; "auto"
+# runs the per-chip measurement (cached). Resolution order (see _resolve_fusion_width):
+#   1. explicit max_fused_qubits arg to fuse_gates
+#   2. MACQUEREL_FUSION_WIDTH=<int>   -> that fixed width
+#   3. MACQUEREL_FUSION_WIDTH=auto    -> autotune_fusion_width() (measure+cache)
+#   4. unset                          -> _DEFAULT_FUSION_WIDTH (4), no measuring
+_DEFAULT_FUSION_WIDTH = 4
+_FUSION_WIDTH_CACHE: int | None = None
+
+
+def _fusion_cache_path() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME")
+    root = Path(base) if base else Path.home() / ".cache"
+    return root / "macquerel" / "fusion_width.json"
+
+
+def _is_valid_fusion_width(width: int) -> bool:
+    return width >= 1
+
+
+def _representative_circuit(n: int) -> Circuit:
+    """A QFT — a fusion-rich mix of 1q gates and controlled phases."""
+    qc = Circuit(n)
+    for i in range(n):
+        qc.h(i)
+        for j in range(i + 1, n):
+            qc.cp(i, j, float(np.pi / (2 ** (j - i))))
+    for i in range(n // 2):
+        qc.swap(i, n - 1 - i)
+    return qc
+
+
+def _time_fuse_and_apply(backend, circuit: Circuit, width: int, n: int) -> float:
+    """Wall-clock seconds to fuse `circuit` at `width` and apply it on `backend`."""
+    t0 = time.perf_counter()
+    fused = fuse_gates(circuit, max_fused_qubits=width)
+    sv = backend.allocate(n)
+    for op in fused.ops:
+        if isinstance(op, Gate):
+            sv = backend.apply_matrix(sv, op.matrix, op.targets, op.controls or None)
+    backend.to_numpy(sv)
+    return time.perf_counter() - t0
+
+
+def _autotune_backend() -> tuple[object, tuple[int, ...]]:
+    """Pick the backend and the span of qubit counts to measure across.
+
+    The optimal fusion width *drifts with qubit count*: at small n the one-time
+    matrix-composition cost dominates the apply and rewards narrow fusion, but as
+    n grows the apply (a full pass over the 2**n state) dominates and wider fusion
+    wins by making fewer passes. Measuring at a single small n therefore picks a
+    width that regresses the large-n path by up to ~2x (see benchmarks/data and
+    the PR discussion). We instead measure across a *span* straddling the regime
+    and pick the width that is best on aggregate, which is robust to that drift.
+
+    MLX serves the 17-30q tier where wall-clock actually matters, so we measure
+    there when available; otherwise we fall back to the CPU reference near the top
+    of its <=16q auto-select tier.
+    """
+    try:
+        from macquerel.backends.mlx_backend import MLXBackend
+
+        return MLXBackend(), (20, 22)
+    except Exception:
+        from macquerel.backends.cpu import CPUBackend
+
+        return CPUBackend(), (14, 16)
+
+
+def _measure_fusion_width(reps: int = 2, candidates=(1, 2, 3, 4, 5, 6)) -> int:
+    """Sweep candidate widths across the regime span; return the aggregate best.
+
+    For each qubit count we time fuse+apply at every candidate width and normalize
+    by that count's fastest width (so a slow large-n point doesn't simply dominate
+    the sum). The width with the lowest total normalized time wins; ties within 2%
+    break toward the documented default, since it is the most robust across n.
+    """
+    backend, n_span = _autotune_backend()
+    score: dict[int, float] = dict.fromkeys(candidates, 0.0)
+    for n in n_span:
+        circuit = _representative_circuit(n)
+        times: dict[int, float] = {}
+        for w in candidates:
+            _time_fuse_and_apply(backend, circuit, w, n)  # warm-up
+            times[w] = min(_time_fuse_and_apply(backend, circuit, w, n) for _ in range(reps))
+        fastest = min(times.values())
+        for w in candidates:
+            score[w] += times[w] / fastest
+
+    best = min(score.values())
+    # Among widths within 2% of the best aggregate score, prefer the one closest
+    # to the documented default (4) — the choice that generalizes best across n.
+    near_best = [w for w in candidates if score[w] <= best * 1.02]
+    return min(near_best, key=lambda w: (abs(w - _DEFAULT_FUSION_WIDTH), w))
+
+
+def autotune_fusion_width(force: bool = False) -> int:
+    """Measure and return the best max_fused_qubits for this chip (opt-in).
+
+    This is **not** invoked on the hot path — `fuse_gates` defaults to a fixed
+    width of 4 (see `_resolve_fusion_width`). Call this explicitly, or set
+    ``MACQUEREL_FUSION_WIDTH=auto``, to opt into per-chip tuning. The result is
+    cached to disk (`~/.cache/macquerel/fusion_width.json`) and in-memory, so the
+    measurement runs at most once. `force=True` re-measures and overwrites the
+    cache. Any measurement failure falls back to the default rather than raising.
+    """
+    global _FUSION_WIDTH_CACHE
+
+    if _FUSION_WIDTH_CACHE is not None and not force:
+        return _FUSION_WIDTH_CACHE
+
+    path = _fusion_cache_path()
+    if not force and path.exists():
+        try:
+            cached = int(json.loads(path.read_text())["max_fused_qubits"])
+            if _is_valid_fusion_width(cached):
+                _FUSION_WIDTH_CACHE = cached
+                return _FUSION_WIDTH_CACHE
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            pass
+
+    try:
+        width = _measure_fusion_width()
+    except Exception:
+        width = _DEFAULT_FUSION_WIDTH
+
+    _FUSION_WIDTH_CACHE = width
+    try:  # persistence is best-effort; never fail the hot path over a cache write
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"max_fused_qubits": width, "platform": os.uname().sysname}))
+    except Exception:
+        pass
+    return width
+
+
+def _resolve_fusion_width() -> int:
+    """Resolve the default fusion width when fuse_gates is called without one.
+
+    Zero-config default is 4. ``MACQUEREL_FUSION_WIDTH`` opts out: a positive
+    int pins the width; ``auto`` runs the per-chip autotuner. Unparseable or
+    non-positive values are ignored in favor of the default.
+    """
+    env = os.environ.get("MACQUEREL_FUSION_WIDTH")
+    if env:
+        if env.strip().lower() == "auto":
+            return autotune_fusion_width()
+        try:
+            width = int(env)
+            if _is_valid_fusion_width(width):
+                return width
+        except ValueError:
+            pass
+    return _DEFAULT_FUSION_WIDTH
 
 
 def _compose_gates(group: list[Gate]) -> Gate:
@@ -95,8 +266,40 @@ def _embed(matrix: np.ndarray, gate_qubits: list[int], full_qubits: list[int]) -
     return out.reshape(dim_full, dim_full)
 
 
-def fuse_gates(circuit: Circuit, max_fused_qubits: int = 4) -> Circuit:
-    """Greedy gate fusion pass. Returns a new Circuit with fused gates."""
+def fuse_gates(circuit: Circuit, max_fused_qubits: int | None = None) -> Circuit:
+    """Greedy gate fusion pass. Returns a new Circuit with fused gates.
+
+    `max_fused_qubits=None` (the default) resolves to a fixed width of **4**.
+
+    Why 4? The ideal width depends on qubit count, because fusion trades a
+    one-time matrix-composition cost against the per-apply cost of a full pass
+    over the ``2**n`` state. Benchmarked on an M5 Max (fuse+apply, MLX backend):
+
+        | qubits n   | ideal max_fused_qubits | why                          |
+        |------------|------------------------|------------------------------|
+        | <= ~16     | 1-2 (immaterial)       | apply is sub-ms; composition |
+        |            |                        | overhead dominates           |
+        | ~20        | 3                      | apply starting to dominate   |
+        | ~22        | 4-5                    |                              |
+        | ~24        | 5-6                    | apply-bound; wider = fewer   |
+        |            |                        | passes over the big state    |
+        | aggregate  | **4**                  | normalized winner across     |
+        | 17-30q     |                        | the measured regime          |
+
+    No single width is optimal everywhere, but 4 wins on normalized aggregate
+    over the measured 17-30q MLX tier, so it is the zero-config default. A naive
+    single-small-n autotuner instead picks 2 and regresses the large-n path by up
+    to ~2x — see the benchmark write-up:
+    https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327
+
+    Pass a positive int to pin the width, or set ``MACQUEREL_FUSION_WIDTH`` (a
+    positive int, or ``auto`` to opt into the cached per-chip autotuner; see
+    `autotune_fusion_width`).
+    """
+    if max_fused_qubits is None:
+        max_fused_qubits = _resolve_fusion_width()
+    elif not _is_valid_fusion_width(max_fused_qubits):
+        raise ValueError("max_fused_qubits must be >= 1")
     result = Circuit(circuit.n_qubits)
     result.ops = []
 

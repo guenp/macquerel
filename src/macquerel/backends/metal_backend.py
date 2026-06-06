@@ -296,7 +296,15 @@ class MetalBackend:
             view[:] = npsv
         return outcomes
 
-    def sample(self, sv: MetalState, qubits: list[int], shots: int) -> Counter:
+    def sample(
+        self,
+        sv: MetalState,
+        qubits: list[int],
+        shots: int,
+        batch_shots: int | str = "auto",
+    ) -> Counter:
+        # batch_shots accepted for interface parity (Step 19); sampling runs on
+        # the host via NumPy (one np.random.choice), so there is nothing to tune.
         npsv = self.to_numpy(sv)
         n = sv.n_qubits
         probs2 = np.abs(npsv.reshape((2,) * n)) ** 2

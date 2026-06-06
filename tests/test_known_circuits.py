@@ -94,6 +94,93 @@ def test_qft_4qubit():
     assert np.allclose(sv_qft, qft_ref, atol=1e-4)
 
 
+def _haar_special_unitary(dim: int, rng: np.random.Generator) -> np.ndarray:
+    """Haar-random special unitary via QR of a complex Ginibre matrix (complex64)."""
+    z = (rng.normal(size=(dim, dim)) + 1j * rng.normal(size=(dim, dim))) / np.sqrt(2.0)
+    q, r = np.linalg.qr(z)
+    ph = np.diagonal(r) / np.abs(np.diagonal(r))
+    u = q * ph
+    return (u * np.linalg.det(u) ** (-1 / dim)).astype(np.complex64)
+
+
+def _qv_layers(n: int, rng: np.random.Generator) -> list[tuple[np.ndarray, list[int]]]:
+    """Quantum Volume model circuit as (SU(4) matrix, [a, b]) layers (depth = n)."""
+    layers: list[tuple[np.ndarray, list[int]]] = []
+    for _ in range(n):
+        perm = rng.permutation(n)
+        for i in range(0, n - 1, 2):
+            u = _haar_special_unitary(4, rng)
+            layers.append((u, [int(perm[i]), int(perm[i + 1])]))
+    return layers
+
+
+def test_quantum_volume_gates_are_special_unitary():
+    """QV dense 2q gates are SU(4): unitary with determinant 1."""
+    rng = np.random.default_rng(5)
+    u = _haar_special_unitary(4, rng)
+    assert np.allclose(u.conj().T @ u, np.eye(4), atol=1e-6)
+    assert np.allclose(np.linalg.det(u), 1.0, atol=1e-5)
+
+
+def test_quantum_volume_normalized():
+    """A Quantum Volume circuit of Haar-random SU(4) gates preserves the norm."""
+    n = 4
+    rng = np.random.default_rng(7)
+    qc = Circuit(n)
+    for u, qubits in _qv_layers(n, rng):
+        qc._add("su4", u, qubits)
+    sv = Simulator(backend="cpu").statevector(qc)
+    assert abs(float(np.linalg.norm(sv)) - 1.0) < 1e-5
+
+
+def test_quantum_volume_inverse_is_identity():
+    """QV circuit followed by its exact inverse returns to |0...0⟩ (known answer)."""
+    n = 4
+    rng = np.random.default_rng(11)
+    layers = _qv_layers(n, rng)
+
+    qc = Circuit(n)
+    for u, qubits in layers:
+        qc._add("su4", u, qubits)
+    for u, qubits in reversed(layers):
+        qc._add("su4_inv", u.conj().T.copy(), qubits)  # U† on the same target order
+
+    sv = Simulator(backend="cpu").statevector(qc)
+    expected = np.zeros(2**n, dtype=np.complex64)
+    expected[0] = 1.0
+    assert np.allclose(sv, expected, atol=1e-4)
+
+
+def test_random_circuit_sampling_matches_statevector():
+    """Random-circuit-sampling spot check: empirical shot frequencies track |ψ|²."""
+    n = 4
+    rng = np.random.default_rng(3)
+    qc = Circuit(n)
+    for q in range(n):
+        qc.h(q)  # spread amplitude across the whole basis
+    for _ in range(20):
+        if rng.random() < 0.5:
+            a, b = rng.choice(n, size=2, replace=False)
+            qc.cx(int(a), int(b))
+        else:
+            q = int(rng.integers(n))
+            qc.rx(q, float(rng.uniform(0, 2 * np.pi)))
+
+    sim = Simulator(backend="cpu", seed=0)
+    probs = np.abs(sim.statevector(qc)) ** 2
+
+    shots = 20000
+    qc.measure_all()
+    counts = sim.run(qc, shots=shots)
+    assert sum(counts.values()) == shots
+
+    empirical = np.zeros(2**n)
+    for bits, c in counts.items():
+        empirical[int(bits, 2)] = c / shots
+    # Sampling error at 20k shots is ~3e-3; 0.05 is a safe, flake-free bound.
+    assert np.max(np.abs(empirical - probs)) < 0.05
+
+
 def test_auto_backend_bell():
     """Simulator with backend='auto' must run correctly on a Bell circuit."""
     sim = Simulator()  # auto
