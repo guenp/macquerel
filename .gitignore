@@ -18,15 +18,19 @@ build/
 # zensical / docs build output
 site/
 .venv/
+.venv-*/
 venv/
 env/
 .env
 
 # uv
 .python-version
+.uv-cache/
 
 # pytest / coverage
+.cache/
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 .tox/
