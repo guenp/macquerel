@@ -18,15 +18,14 @@ from macquerel.gates import classify
 # overhead) but a more expensive matrix composition and a larger dense apply.
 # The catch is that the optimum *drifts with qubit count*: small n is
 # composition-bound and favors narrow fusion, large n is apply-bound and favors
-# wide. There is no single best width across the range — but width 4 is the
-# robust compromise (within ~7% of optimal at every n we measured, and the
-# aggregate-normalized winner across the 17-30q regime). See the ideal-width
-# table on `fuse_gates` and the benchmark write-up:
+# wide. There is no single best width across the range, but width 4 is the
+# aggregate-normalized winner across the measured 17-30q regime. See the
+# ideal-width table on `fuse_gates` and the benchmark write-up:
 #   https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327
 #
 # So 4 is the zero-config default — no measurement on the hot path. Autotuning
-# is opt-in via MACQUEREL_FUSION_WIDTH: an int pins the width; "auto" runs the
-# per-chip measurement (cached). Resolution order (see _resolve_fusion_width):
+# is opt-in via MACQUEREL_FUSION_WIDTH: a positive int pins the width; "auto"
+# runs the per-chip measurement (cached). Resolution order (see _resolve_fusion_width):
 #   1. explicit max_fused_qubits arg to fuse_gates
 #   2. MACQUEREL_FUSION_WIDTH=<int>   -> that fixed width
 #   3. MACQUEREL_FUSION_WIDTH=auto    -> autotune_fusion_width() (measure+cache)
@@ -39,6 +38,10 @@ def _fusion_cache_path() -> Path:
     base = os.environ.get("XDG_CACHE_HOME")
     root = Path(base) if base else Path.home() / ".cache"
     return root / "macquerel" / "fusion_width.json"
+
+
+def _is_valid_fusion_width(width: int) -> bool:
+    return width >= 1
 
 
 def _representative_circuit(n: int) -> Circuit:
@@ -135,8 +138,10 @@ def autotune_fusion_width(force: bool = False) -> int:
     path = _fusion_cache_path()
     if not force and path.exists():
         try:
-            _FUSION_WIDTH_CACHE = int(json.loads(path.read_text())["max_fused_qubits"])
-            return _FUSION_WIDTH_CACHE
+            cached = int(json.loads(path.read_text())["max_fused_qubits"])
+            if _is_valid_fusion_width(cached):
+                _FUSION_WIDTH_CACHE = cached
+                return _FUSION_WIDTH_CACHE
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             pass
 
@@ -157,16 +162,18 @@ def autotune_fusion_width(force: bool = False) -> int:
 def _resolve_fusion_width() -> int:
     """Resolve the default fusion width when fuse_gates is called without one.
 
-    Zero-config default is 4. ``MACQUEREL_FUSION_WIDTH`` opts out: an int pins
-    the width; ``auto`` runs the per-chip autotuner. An unparseable value is
-    ignored in favor of the default.
+    Zero-config default is 4. ``MACQUEREL_FUSION_WIDTH`` opts out: a positive
+    int pins the width; ``auto`` runs the per-chip autotuner. Unparseable or
+    non-positive values are ignored in favor of the default.
     """
     env = os.environ.get("MACQUEREL_FUSION_WIDTH")
     if env:
         if env.strip().lower() == "auto":
             return autotune_fusion_width()
         try:
-            return int(env)
+            width = int(env)
+            if _is_valid_fusion_width(width):
+                return width
         except ValueError:
             pass
     return _DEFAULT_FUSION_WIDTH
@@ -276,21 +283,23 @@ def fuse_gates(circuit: Circuit, max_fused_qubits: int | None = None) -> Circuit
         | ~22        | 4-5                    |                              |
         | ~24        | 5-6                    | apply-bound; wider = fewer   |
         |            |                        | passes over the big state    |
-        | aggregate  | **4**                  | robust across the regime     |
-        | 17-30q     |                        | (within ~7% of optimal at    |
-        |            |                        | every n; normalized winner)  |
+        | aggregate  | **4**                  | normalized winner across     |
+        | 17-30q     |                        | the measured regime          |
 
-    No single width is optimal everywhere, but 4 is within ~7% of the best at
-    every measured n and wins on aggregate over the 17-30q MLX tier, so it is the
-    zero-config default. A naive single-small-n autotuner instead picks 2 and
-    regresses the large-n path by up to ~2x — see the benchmark write-up:
+    No single width is optimal everywhere, but 4 wins on normalized aggregate
+    over the measured 17-30q MLX tier, so it is the zero-config default. A naive
+    single-small-n autotuner instead picks 2 and regresses the large-n path by up
+    to ~2x — see the benchmark write-up:
     https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327
 
-    Pass an int to pin the width, or set ``MACQUEREL_FUSION_WIDTH`` (an int, or
-    ``auto`` to opt into the cached per-chip autotuner; see `autotune_fusion_width`).
+    Pass a positive int to pin the width, or set ``MACQUEREL_FUSION_WIDTH`` (a
+    positive int, or ``auto`` to opt into the cached per-chip autotuner; see
+    `autotune_fusion_width`).
     """
     if max_fused_qubits is None:
         max_fused_qubits = _resolve_fusion_width()
+    elif not _is_valid_fusion_width(max_fused_qubits):
+        raise ValueError("max_fused_qubits must be >= 1")
     result = Circuit(circuit.n_qubits)
     result.ops = []
 

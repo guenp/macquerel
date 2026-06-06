@@ -9,9 +9,8 @@ backends. The point is to show *why macquerel defaults to width 4*:
     matrix-composition cost dominates the apply and rewards narrow fusion; as n
     grows the apply (a full pass over the 2**n state) dominates and wider fusion
     wins by making fewer passes.
-  - No single width is best everywhere, but width 4 is within a few percent of
-    optimal at every n and wins on the normalized aggregate across the 17-30q
-    MLX tier — hence the default.
+  - No single width is best everywhere, but width 4 wins on the normalized
+    aggregate across the measured 17-30q MLX tier — hence the default.
 
 See the write-up: https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327
 

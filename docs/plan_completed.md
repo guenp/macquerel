@@ -394,14 +394,14 @@ pass over the `2ⁿ` state. Benchmarked on an M5 Max (fuse+apply, MLX backend):
 | ~20 | 3 | apply starting to dominate |
 | ~22 | 4–5 | |
 | ~24 | 5–6 | apply-bound — wider fusion = fewer passes |
-| **17–30q aggregate** | **4** | within ~7% of optimal at every n; normalized winner |
+| **17–30q aggregate** | **4** | normalized winner across the measured regime |
 
-No single width is optimal everywhere, but **4 is within ~7% of the best at every measured n
-and wins on aggregate** across the 17–30q MLX tier, so it is the default. This was settled by
-re-running the benchmarks: a first cut autotuned on a single QFT at n=18 and picked width 2,
-which **regressed the large-n path by up to ~2×** (22q QFT: 617ms→1376ms on CPU; 131→222ms on
-MLX) while only shaving negligible ms off sub-16q circuits. The opt-in autotuner now measures
-fuse+apply across a *span* straddling the regime (MLX 20q/22q, else CPU 14q/16q), normalizes
-each qubit count by its own fastest width, and picks the lowest aggregate (ties within 2%
-break toward 4); on this chip it confirms 4. Full benchmark write-up:
+No single width is optimal everywhere, but **4 wins on normalized aggregate** across the
+measured 17–30q MLX tier, so it is the default. This was settled by re-running the benchmarks:
+a first cut autotuned on a single QFT at n=18 and picked width 2, which **regressed the
+large-n path by up to ~2×** (22q QFT: 617ms→1376ms on CPU; 131→222ms on MLX) while only
+shaving negligible ms off sub-16q circuits. The opt-in autotuner now measures fuse+apply
+across a *span* straddling the regime (MLX 20q/22q, else CPU 14q/16q), normalizes each qubit
+count by its own fastest width, and picks the lowest aggregate (ties within 2% break toward
+4); on this chip it confirms 4. Full benchmark write-up:
 <https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327>.

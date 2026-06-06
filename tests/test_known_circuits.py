@@ -94,12 +94,13 @@ def test_qft_4qubit():
     assert np.allclose(sv_qft, qft_ref, atol=1e-4)
 
 
-def _haar_unitary(dim: int, rng: np.random.Generator) -> np.ndarray:
-    """Haar-random unitary via QR of a complex Ginibre matrix (complex64)."""
+def _haar_special_unitary(dim: int, rng: np.random.Generator) -> np.ndarray:
+    """Haar-random special unitary via QR of a complex Ginibre matrix (complex64)."""
     z = (rng.normal(size=(dim, dim)) + 1j * rng.normal(size=(dim, dim))) / np.sqrt(2.0)
     q, r = np.linalg.qr(z)
     ph = np.diagonal(r) / np.abs(np.diagonal(r))
-    return (q * ph).astype(np.complex64)
+    u = q * ph
+    return (u * np.linalg.det(u) ** (-1 / dim)).astype(np.complex64)
 
 
 def _qv_layers(n: int, rng: np.random.Generator) -> list[tuple[np.ndarray, list[int]]]:
@@ -108,9 +109,17 @@ def _qv_layers(n: int, rng: np.random.Generator) -> list[tuple[np.ndarray, list[
     for _ in range(n):
         perm = rng.permutation(n)
         for i in range(0, n - 1, 2):
-            u = _haar_unitary(4, rng)
+            u = _haar_special_unitary(4, rng)
             layers.append((u, [int(perm[i]), int(perm[i + 1])]))
     return layers
+
+
+def test_quantum_volume_gates_are_special_unitary():
+    """QV dense 2q gates are SU(4): unitary with determinant 1."""
+    rng = np.random.default_rng(5)
+    u = _haar_special_unitary(4, rng)
+    assert np.allclose(u.conj().T @ u, np.eye(4), atol=1e-6)
+    assert np.allclose(np.linalg.det(u), 1.0, atol=1e-5)
 
 
 def test_quantum_volume_normalized():

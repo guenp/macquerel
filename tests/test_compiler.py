@@ -186,6 +186,23 @@ def test_env_garbage_falls_back_to_default(monkeypatch):
     assert compiler._resolve_fusion_width() == compiler._DEFAULT_FUSION_WIDTH
 
 
+def test_env_non_positive_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("MACQUEREL_FUSION_WIDTH", "0")
+    assert compiler._resolve_fusion_width() == compiler._DEFAULT_FUSION_WIDTH
+    monkeypatch.setenv("MACQUEREL_FUSION_WIDTH", "-2")
+    assert compiler._resolve_fusion_width() == compiler._DEFAULT_FUSION_WIDTH
+
+
+def test_cached_non_positive_width_is_ignored(monkeypatch, tmp_path):
+    monkeypatch.setattr(compiler, "_FUSION_WIDTH_CACHE", None)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    cache = tmp_path / "macquerel" / "fusion_width.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text('{"max_fused_qubits": 0}')
+    monkeypatch.setattr(compiler, "_measure_fusion_width", lambda: 3)
+    assert autotune_fusion_width() == 3
+
+
 def test_autotune_measures_and_caches(monkeypatch, tmp_path):
     """With no override, the width is measured once and persisted to disk."""
     monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
@@ -250,3 +267,16 @@ def test_fuse_gates_default_width_is_four(monkeypatch):
     widths = [len(op.targets) + len(op.controls) for op in fused.ops if isinstance(op, Gate)]
     assert max(widths) == 4
     assert sum(widths) == 6
+
+
+def test_fuse_gates_rejects_non_positive_width():
+    qc = Circuit(2)
+    qc.h(0)
+    qc.h(1)
+    for width in (0, -1):
+        try:
+            fuse_gates(qc, max_fused_qubits=width)
+        except ValueError as e:
+            assert "max_fused_qubits" in str(e)
+        else:
+            raise AssertionError(f"width {width} should have raised")

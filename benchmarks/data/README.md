@@ -85,8 +85,8 @@ the `2**n` state). Best width per cell, MLX on Apple M5 Max (`fusion_width.json`
 | circuit | 18q | 20q | 22q | 24q |
 |---|---|---|---|---|
 | QFT | 2 | 3 | 5 | 6 |
-| random | 2 | 3 | 6 | 6 |
-| QAOA | 2 | 3 | 4 | 6 |
+| random | 1 | 3 | 6 | 6 |
+| QAOA | 2 | 3 | 4 | 5 |
 | QV | 3 | 4 | 5 | 6 |
 
 No single width is best everywhere, but the **normalized aggregate** across the
@@ -94,11 +94,11 @@ No single width is best everywhere, but the **normalized aggregate** across the
 
 | width | 1 | 2 | 3 | **4** | 5 | 6 |
 |---|---|---|---|---|---|---|
-| mean (time / per-cell best) | 1.99 | 1.69 | 1.45 | **1.26** | 1.44 | 2.33 |
+| mean (time / per-cell best) | 2.01 | 1.70 | 1.45 | **1.23** | 1.39 | 2.27 |
 
-So 4 is within a few percent of optimal at every n and the aggregate winner — the
-robust zero-config default. A naive autotuner that measured a single small-n point
-instead picked 2 and regressed the large-n path by up to ~2×; see the write-up:
+So 4 is the aggregate winner across these cells — the robust zero-config default.
+A naive autotuner that measured a single small-n point instead picked 2 and
+regressed the large-n path by up to ~2×; see the write-up:
 <https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327>.
 
 ## Results summary
