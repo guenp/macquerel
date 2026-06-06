@@ -379,10 +379,20 @@ kwarg for interface parity (host NumPy sampling has nothing to tune).
 
 `fuse_gates(max_fused_qubits=None)` resolves the width from `autotune_fusion_width()`, which
 measures the optimal `max_fused_qubits` on the local chip once and caches it
-(`~/.cache/macquerel/fusion_width.json` + in-memory). The sweep (widths 1–6 on a
-representative QFT) times fuse+apply on the **throughput-critical** backend — MLX when
-available, at a qubit count where it is selected; CPU otherwise — because the fusion-width
-trade-off (costlier composition vs fewer kernel launches) is a GPU-dispatch effect that
-the CPU reference does not exhibit. `MACQUEREL_FUSION_WIDTH` pins the width and skips
-measuring; measurement failures fall back to the documented default of 4 and never raise on
-the hot path.
+(`~/.cache/macquerel/fusion_width.json` + in-memory). `MACQUEREL_FUSION_WIDTH` pins the width
+and skips measuring; measurement failures fall back to the documented default of 4 and never
+raise on the hot path.
+
+**Measurement methodology (and a regression it had to avoid).** The optimal width *drifts
+with qubit count*: at small n the one-time matrix-composition cost dominates the apply and
+rewards narrow fusion, but as n grows the apply (a full pass over the `2ⁿ` state) dominates
+and wider fusion wins. A first cut measured a single QFT at n=18 on MLX and picked width 2,
+which **regressed the large-n path by up to ~2×** (22q QFT: 617ms→1376ms on CPU; 131→222ms
+on MLX) while only shaving a few negligible ms off sub-16q circuits — caught by re-running
+the benchmarks. The shipped version instead measures fuse+apply across a *span* straddling
+the regime (MLX at 20q and 22q when available, else the CPU reference at 14q/16q), normalizes
+each qubit count by its own fastest width, and picks the lowest aggregate, breaking ties
+within 2% toward the default. On the dev M5 Max the per-n optima drift (20q→3, 22q→5, 24q→6)
+but the aggregate winner is **4** — i.e. the autotuner now confirms the spec's robust default
+on this chip with no regression, while still able to pick a different width where the physics
+differs.

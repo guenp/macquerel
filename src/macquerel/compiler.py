@@ -58,36 +58,56 @@ def _time_fuse_and_apply(backend, circuit: Circuit, width: int, n: int) -> float
     return time.perf_counter() - t0
 
 
-def _autotune_backend() -> tuple[object, int]:
-    """Pick the backend (and a representative qubit count) to measure on.
+def _autotune_backend() -> tuple[object, tuple[int, ...]]:
+    """Pick the backend and the span of qubit counts to measure across.
 
-    Fusion width is a GPU-dispatch optimization: wider fusion trades a costlier
-    host-side matrix composition for fewer kernel launches. That trade only pays
-    off on a dispatch-bound backend, so we measure on MLX when it is available
-    (the path that actually benefits, at a qubit count where it is selected) and
-    fall back to the CPU reference otherwise.
+    The optimal fusion width *drifts with qubit count*: at small n the one-time
+    matrix-composition cost dominates the apply and rewards narrow fusion, but as
+    n grows the apply (a full pass over the 2**n state) dominates and wider fusion
+    wins by making fewer passes. Measuring at a single small n therefore picks a
+    width that regresses the large-n path by up to ~2x (see benchmarks/data and
+    the PR discussion). We instead measure across a *span* straddling the regime
+    and pick the width that is best on aggregate, which is robust to that drift.
+
+    MLX serves the 17-30q tier where wall-clock actually matters, so we measure
+    there when available; otherwise we fall back to the CPU reference near the top
+    of its <=16q auto-select tier.
     """
     try:
         from macquerel.backends.mlx_backend import MLXBackend
 
-        return MLXBackend(), 18
+        return MLXBackend(), (20, 22)
     except Exception:
         from macquerel.backends.cpu import CPUBackend
 
-        return CPUBackend(), 12
+        return CPUBackend(), (14, 16)
 
 
-def _measure_fusion_width(reps: int = 3, candidates=(1, 2, 3, 4, 5, 6)) -> int:
-    """Sweep candidate widths on a representative circuit; return the fastest."""
-    backend, n = _autotune_backend()
-    circuit = _representative_circuit(n)
-    best_w, best_t = _DEFAULT_FUSION_WIDTH, float("inf")
-    for w in candidates:
-        _time_fuse_and_apply(backend, circuit, w, n)  # warm-up
-        t = min(_time_fuse_and_apply(backend, circuit, w, n) for _ in range(reps))
-        if t < best_t:
-            best_t, best_w = t, w
-    return best_w
+def _measure_fusion_width(reps: int = 2, candidates=(1, 2, 3, 4, 5, 6)) -> int:
+    """Sweep candidate widths across the regime span; return the aggregate best.
+
+    For each qubit count we time fuse+apply at every candidate width and normalize
+    by that count's fastest width (so a slow large-n point doesn't simply dominate
+    the sum). The width with the lowest total normalized time wins; ties within 2%
+    break toward the documented default, since it is the most robust across n.
+    """
+    backend, n_span = _autotune_backend()
+    score: dict[int, float] = dict.fromkeys(candidates, 0.0)
+    for n in n_span:
+        circuit = _representative_circuit(n)
+        times: dict[int, float] = {}
+        for w in candidates:
+            _time_fuse_and_apply(backend, circuit, w, n)  # warm-up
+            times[w] = min(_time_fuse_and_apply(backend, circuit, w, n) for _ in range(reps))
+        fastest = min(times.values())
+        for w in candidates:
+            score[w] += times[w] / fastest
+
+    best = min(score.values())
+    # Among widths within 2% of the best aggregate score, prefer the one closest
+    # to the documented default (4) — the choice that generalizes best across n.
+    near_best = [w for w in candidates if score[w] <= best * 1.02]
+    return min(near_best, key=lambda w: (abs(w - _DEFAULT_FUSION_WIDTH), w))
 
 
 def autotune_fusion_width(force: bool = False) -> int:

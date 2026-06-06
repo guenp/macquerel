@@ -169,6 +169,9 @@ def test_autotune_measures_and_caches(monkeypatch, tmp_path):
     monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
     monkeypatch.setattr(compiler, "_FUSION_WIDTH_CACHE", None)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    # Measure on a tiny CPU span so the test stays fast (the production span runs
+    # on MLX at 20-22q); we only need to exercise the measure/normalize/cache path.
+    monkeypatch.setattr(compiler, "_autotune_backend", lambda: (CPUBackend(), (6, 8)))
 
     width = autotune_fusion_width(force=True)
     assert width in range(1, 7)
