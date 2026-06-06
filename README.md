@@ -103,6 +103,12 @@ uv run python benchmarks/bench_versions.py --versions latest --backends cpu --qu
 Full benchmark commands:
 
 ```bash
+# Install plotting and framework-comparison dependencies first.
+uv sync --extra bench
+
+# On Apple Silicon, include macquerel's optional GPU backends too:
+uv sync --extra bench --extra mlx --extra metal
+
 # macquerel CPU/MLX/Metal vs Qiskit Aer and Qulacs
 uv run python benchmarks/bench_statevector.py \
   --json benchmarks/data/framework_comparison.json \
@@ -119,8 +125,9 @@ uv run python benchmarks/bench_versions.py \
   --plot benchmarks/data/version_regression.png
 ```
 
-Install `uv sync --extra viz` before regenerating plots. Optional frameworks and Apple-only
-backends are reported as skipped when they are unavailable.
+The framework benchmark prints every backend it discovers at startup. Optional frameworks and
+Apple-only backends are reported as skipped when they are unavailable. Qulacs currently may
+need a Python version with a prebuilt wheel, or local C++/Boost build prerequisites.
 
 ## Requirements
 

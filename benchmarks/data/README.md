@@ -9,7 +9,10 @@ The maintained benchmark suite focuses on three outputs:
 Regenerate the plots with:
 
 ```bash
-uv sync --extra viz
+uv sync --extra bench
+
+# On Apple Silicon, include macquerel's optional GPU backends too:
+uv sync --extra bench --extra mlx --extra metal
 
 uv run python benchmarks/bench_statevector.py \
   --json benchmarks/data/framework_comparison.json \
@@ -29,3 +32,7 @@ uv run python benchmarks/bench_versions.py \
 comparison against the latest PyPI release and prints the benchmark table to stdout. On Apple
 machines, pass `--backends cpu mlx metal --extras mlx metal` to include the optional GPU
 backends for released-version comparisons.
+
+`bench_statevector.py` prints backend availability before timing starts. If Qulacs is skipped
+on Python 3.14, install it in an environment with a prebuilt wheel or provide its local
+C++/Boost build prerequisites.
