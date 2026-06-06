@@ -375,24 +375,33 @@ pins the batch and draws in chunks with deterministic per-chunk subkeys; a seede
 run draws in a single deterministic pass so results stay reproducible. CPU/Metal accept the
 kwarg for interface parity (host NumPy sampling has nothing to tune).
 
-### Step 20: Per-chip fusion-width autotuning (`src/macquerel/compiler.py`)
+### Step 20: Fusion-width default + opt-in per-chip autotuning (`src/macquerel/compiler.py`)
 
-`fuse_gates(max_fused_qubits=None)` resolves the width from `autotune_fusion_width()`, which
-measures the optimal `max_fused_qubits` on the local chip once and caches it
-(`~/.cache/macquerel/fusion_width.json` + in-memory). `MACQUEREL_FUSION_WIDTH` pins the width
-and skips measuring; measurement failures fall back to the documented default of 4 and never
-raise on the hot path.
+`fuse_gates(max_fused_qubits=None)` resolves to a **fixed width of 4** — the zero-config
+default, with no measurement on the hot path. Autotuning is **opt-in** via
+`MACQUEREL_FUSION_WIDTH`: an int pins the width; `auto` runs `autotune_fusion_width()`, which
+measures the optimal width on the local chip once and caches it
+(`~/.cache/macquerel/fusion_width.json` + in-memory). Measurement failures fall back to 4 and
+never raise.
 
-**Measurement methodology (and a regression it had to avoid).** The optimal width *drifts
-with qubit count*: at small n the one-time matrix-composition cost dominates the apply and
-rewards narrow fusion, but as n grows the apply (a full pass over the `2ⁿ` state) dominates
-and wider fusion wins. A first cut measured a single QFT at n=18 on MLX and picked width 2,
-which **regressed the large-n path by up to ~2×** (22q QFT: 617ms→1376ms on CPU; 131→222ms
-on MLX) while only shaving a few negligible ms off sub-16q circuits — caught by re-running
-the benchmarks. The shipped version instead measures fuse+apply across a *span* straddling
-the regime (MLX at 20q and 22q when available, else the CPU reference at 14q/16q), normalizes
-each qubit count by its own fastest width, and picks the lowest aggregate, breaking ties
-within 2% toward the default. On the dev M5 Max the per-n optima drift (20q→3, 22q→5, 24q→6)
-but the aggregate winner is **4** — i.e. the autotuner now confirms the spec's robust default
-on this chip with no regression, while still able to pick a different width where the physics
-differs.
+**Why 4, and the ideal width per qubit count.** The optimal width *drifts with qubit count*,
+because fusion trades a one-time matrix-composition cost against the per-apply cost of a full
+pass over the `2ⁿ` state. Benchmarked on an M5 Max (fuse+apply, MLX backend):
+
+| qubits n | ideal `max_fused_qubits` | regime |
+|---|---|---|
+| ≤ ~16 | 1–2 (immaterial) | apply is sub-ms; composition overhead dominates |
+| ~20 | 3 | apply starting to dominate |
+| ~22 | 4–5 | |
+| ~24 | 5–6 | apply-bound — wider fusion = fewer passes |
+| **17–30q aggregate** | **4** | within ~7% of optimal at every n; normalized winner |
+
+No single width is optimal everywhere, but **4 is within ~7% of the best at every measured n
+and wins on aggregate** across the 17–30q MLX tier, so it is the default. This was settled by
+re-running the benchmarks: a first cut autotuned on a single QFT at n=18 and picked width 2,
+which **regressed the large-n path by up to ~2×** (22q QFT: 617ms→1376ms on CPU; 131→222ms on
+MLX) while only shaving negligible ms off sub-16q circuits. The opt-in autotuner now measures
+fuse+apply across a *span* straddling the regime (MLX 20q/22q, else CPU 14q/16q), normalizes
+each qubit count by its own fastest width, and picks the lowest aggregate (ties within 2%
+break toward 4); on this chip it confirms 4. Full benchmark write-up:
+<https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327>.
