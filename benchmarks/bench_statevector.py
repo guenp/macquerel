@@ -23,6 +23,11 @@ Usage:
         --json benchmarks/data/framework_comparison.json \
         --plot benchmarks/data/framework_comparison.png
 
+    # Merge per-backend JSONs (e.g. one run per backend) into one chart:
+    uv run python benchmarks/bench_statevector.py \
+        --aggregate benchmarks/data/large \
+        --plot benchmarks/data/large/aggregate.png
+
 Precision note: macquerel defaults to complex64 (single precision); Qiskit Aer and
 Qulacs use complex128 (double). Single precision is ~2x lighter on memory bandwidth,
 which matters on a bandwidth-bound machine. Use --double to force macquerel to
@@ -420,6 +425,38 @@ class Results:
         self.data.setdefault(circuit, {}).setdefault(backend, []).append((q, secs))
 
 
+def _expand_json_paths(items: list[str]) -> list[Path]:
+    """Turn a mix of file and directory arguments into a flat list of JSON files."""
+    paths: list[Path] = []
+    for item in items:
+        p = Path(item)
+        paths.extend(sorted(p.glob("*.json")) if p.is_dir() else [p])
+    return paths
+
+
+def load_results(paths: list[Path]) -> Results:
+    """Merge framework_comparison JSONs (e.g. one per backend) into one Results.
+
+    Later files win for any duplicated (circuit, backend, qubits) cell.
+    """
+    merged: dict = {}  # circuit -> backend -> {qubits: secs}
+    for path in paths:
+        doc = json.loads(path.read_text())
+        if doc.get("benchmark") != "framework_comparison":
+            continue
+        for circuit, by_backend in doc["results"].items():
+            for backend, series in by_backend.items():
+                cell = merged.setdefault(circuit, {}).setdefault(backend, {})
+                for q, secs in series:
+                    cell[int(q)] = secs
+    results = Results()
+    for circuit, by_backend in merged.items():
+        for backend, cell in by_backend.items():
+            for q in sorted(cell):
+                results.add(circuit, backend, q, cell[q])
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -438,6 +475,14 @@ def main():
     ap.add_argument("--json", default=None, help="save raw results to this path")
     ap.add_argument(
         "--plot", default="benchmarks/data/framework_comparison.png", help="output chart path"
+    )
+    ap.add_argument(
+        "--aggregate",
+        nargs="+",
+        default=None,
+        metavar="PATH",
+        help="skip benchmarking; merge these result JSONs (files or directories of "
+        "per-backend runs) into a single chart written to --plot",
     )
     ap.add_argument(
         "--no-isolate",
@@ -473,6 +518,17 @@ def main():
 
     if args.worker:
         return run_worker(args)
+
+    if args.aggregate:
+        paths = _expand_json_paths(args.aggregate)
+        results = load_results(paths)
+        if not results.data:
+            print("No framework_comparison JSONs found to aggregate.")
+            return
+        circuits = [c for c in args.circuits if c in results.data]
+        circuits += [c for c in results.data if c not in circuits]
+        make_plot(results, circuits, args.plot)
+        return
 
     isolate = not args.no_isolate
     backends = discover_backends(args.backends, args.double)
@@ -556,6 +612,16 @@ def main():
     make_plot(results, args.circuits, args.plot)
 
 
+# Stable colours so a backend reads the same across every panel.
+BACKEND_COLORS = {
+    "macquerel-metal": "#d62728",
+    "macquerel-mlx": "#1f77b4",
+    "macquerel-cpu": "#2ca02c",
+    "aer": "#9467bd",
+    "qulacs": "#ff7f0e",
+}
+
+
 def make_plot(results: Results, circuits, path):
     try:
         import matplotlib
@@ -575,17 +641,48 @@ def make_plot(results: Results, circuits, path):
 
     for idx, circuit in enumerate(circuits):
         ax = axes[idx // cols][idx % cols]
+        plotted = {}
         for backend, series in sorted(results.data[circuit].items()):
             series = sorted(series)
             xs = [q for q, _ in series]
             ys = [s * 1e3 for _, s in series]
-            ax.plot(xs, ys, marker="o", label=backend)
+            plotted[backend] = dict(zip(xs, ys, strict=True))
+            is_metal = backend == "macquerel-metal"
+            ax.plot(
+                xs,
+                ys,
+                marker="o",
+                markersize=4,
+                label=backend,
+                color=BACKEND_COLORS.get(backend),
+                linewidth=2 if is_metal else 1.3,
+                zorder=3 if is_metal else 2,
+            )
+        crossover = _metal_crossover(plotted)
+        if crossover is not None:
+            q, _ = crossover
+            metal_c = BACKEND_COLORS["macquerel-metal"]
+            xmax = max(max(s) for s in plotted.values())
+            ax.axvline(q, color=metal_c, linestyle="--", linewidth=1.5, alpha=0.7)
+            ax.axvspan(q, xmax, color=metal_c, alpha=0.05)
+            ax.annotate(
+                f"Metal wins\n≥ {q}q",
+                xy=(q, 0.0),
+                xycoords=("data", "axes fraction"),
+                xytext=(6, 8),
+                textcoords="offset points",
+                color=metal_c,
+                fontsize=9,
+                fontweight="bold",
+                ha="left",
+                va="bottom",
+            )
         ax.set_title(circuit)
         ax.set_xlabel("qubits")
         ax.set_ylabel("statevector time (ms)")
         ax.set_yscale("log")
         ax.grid(True, which="both", alpha=0.3)
-        ax.legend()
+        ax.legend(fontsize=8)
 
     for j in range(len(circuits), rows * cols):
         axes[j // cols][j % cols].axis("off")
@@ -593,6 +690,25 @@ def make_plot(results: Results, circuits, path):
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     print(f"Chart -> {path}")
+
+
+def _metal_crossover(plotted: dict[str, dict[int, float]]) -> tuple[int, float] | None:
+    """First qubit count where Metal beats every other backend present at that q.
+
+    This is where Metal becomes the more feasible choice: below it a CPU
+    simulator (qulacs/aer) wins on dispatch overhead, above it Metal's
+    bandwidth advantage takes over and eventually it is the only backend that
+    still fits in memory at all.
+    """
+    metal = plotted.get("macquerel-metal")
+    if not metal:
+        return None
+    others = {b: v for b, v in plotted.items() if b != "macquerel-metal"}
+    for q in sorted(metal):
+        rivals = [v[q] for v in others.values() if q in v]
+        if rivals and metal[q] < min(rivals):
+            return q, metal[q]
+    return None
 
 
 if __name__ == "__main__":

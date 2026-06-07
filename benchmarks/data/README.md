@@ -3,6 +3,9 @@
 The maintained benchmark suite focuses on three outputs:
 
 - `framework_comparison.json/.png`: macquerel CPU, MLX, and Metal compared with Qiskit Aer and Qulacs.
+- `large/`: the same comparison pushed to 32 qubits, with one JSON per backend (each run in
+  isolation so a memory-hungry backend doesn't crowd the others out). `large/aggregate.png`
+  merges them into one chart and marks where Metal overtakes the best alternative.
 - `fusion_width.json/.png`: runtime vs `max_fused_qubits`.
 - `version_regression.json/.png`: released macquerel versions compared with the current checkout for CPU, MLX, and Metal.
 
@@ -17,6 +20,11 @@ uv sync --extra bench --extra mlx --extra metal
 uv run python benchmarks/bench_statevector.py \
   --json benchmarks/data/framework_comparison.json \
   --plot benchmarks/data/framework_comparison.png
+
+# Merge the per-backend runs under large/ into one annotated chart:
+uv run python benchmarks/bench_statevector.py \
+  --aggregate benchmarks/data/large \
+  --plot benchmarks/data/large/aggregate.png
 
 uv run python benchmarks/bench_fusion_width.py \
   --json benchmarks/data/fusion_width.json \
