@@ -11,6 +11,20 @@ class CPUBackend:
     def __init__(self, seed: int | None = None) -> None:
         if seed is not None:
             np.random.seed(seed)
+        # classify() memoized by matrix bytes — the diagonal fast-path check
+        # would otherwise cost ~10us of NumPy overhead per gate application,
+        # which is a measurable regression on the raw small-n per-gate path.
+        self._classify_cache: dict[tuple, str] = {}
+
+    def _classify(self, mat: np.ndarray) -> str:
+        key = (mat.shape, mat.tobytes())
+        kind = self._classify_cache.get(key)
+        if kind is None:
+            from macquerel.gates import classify
+
+            kind = classify(mat)
+            self._classify_cache[key] = kind
+        return kind
 
     def allocate(self, n_qubits: int, dtype=np.complex64) -> np.ndarray:
         sv = np.zeros(2**n_qubits, dtype=dtype)
@@ -37,9 +51,7 @@ class CPUBackend:
         # tensordot + transpose. Required for the wide fused diagonals the
         # compiler now emits (a 10-qubit diagonal as a dense 1024x1024 tensordot
         # would be far slower than the gates it replaced).
-        from macquerel.gates import classify
-
-        if classify(matrix) == "diagonal":
+        if self._classify(matrix) == "diagonal":
             return self._apply_diagonal(sv, matrix, targets, n, k)
 
         state = sv.reshape((2,) * n)
