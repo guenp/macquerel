@@ -95,6 +95,38 @@ def test_fuzz_differential(cpu, metal, seed):
     )
 
 
+def test_deep_circuit_crosses_flush_cap(cpu, metal):
+    """A gate run longer than _FLUSH_EVERY spans several command buffers (Step 22).
+
+    Exercises the batched-encoding path: encode > _FLUSH_EVERY dispatches so at
+    least one mid-run flush happens, and verify the final state still matches
+    the CPU oracle (ordering across command-buffer boundaries is preserved).
+    """
+    from macquerel.backends.metal_backend import _FLUSH_EVERY
+
+    rng = np.random.default_rng(7)
+    n = 5
+    ops = _random_ops(n, _FLUSH_EVERY + 40, rng)
+    sv_cpu = cpu.to_numpy(_apply_gates(cpu, cpu.allocate(n), ops))
+    sv_metal = metal.to_numpy(_apply_gates(metal, metal.allocate(n), ops))
+    assert np.allclose(sv_cpu, sv_metal, atol=1e-4), (
+        f"max diff: {np.max(np.abs(sv_cpu - sv_metal))}"
+    )
+
+
+def test_gates_after_measure_see_collapsed_state(metal):
+    """Host-side collapse writes must be ordered against batched GPU dispatches."""
+    backend = MetalBackend(seed=3)
+    sv = backend.allocate(2)
+    sv = backend.apply_matrix(sv, g.H(), [0])
+    (outcome,) = backend.measure(sv, [0], collapse=True)
+    # After collapse, qubit 0 is a basis state; X flips it deterministically.
+    sv = backend.apply_matrix(sv, g.X(), [0])
+    final = backend.to_numpy(sv)
+    expected_idx = (1 - outcome) << 1
+    assert np.isclose(abs(final[expected_idx]), 1.0, atol=1e-5)
+
+
 def test_bell_state(metal):
     sv = metal.allocate(2)
     sv = metal.apply_matrix(sv, g.H(), [0])

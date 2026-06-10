@@ -121,6 +121,18 @@ kernel void dense(device float2*   state       [[buffer(0)]],
 
 _MAX_DIM = 1 << 15  # per-grid-dimension thread cap used when factoring the grid
 
+# Step 22: gate dispatches are *encoded* into one open command buffer and only
+# committed at observation boundaries (readback / measure / sample) or after
+# this many encoded dispatches, whichever comes first. The cap bounds encoder
+# growth and keeps GPU latency hidden behind further encoding.
+_FLUSH_EVERY = 256
+
+# Cap on the content-keyed constant-buffer cache (matrices / index tables).
+# Entries are tiny (<= a few KiB) but deep parameterized circuits produce
+# unbounded distinct matrices, so reset the cache when it fills. In-flight
+# command buffers retain their referenced MTLBuffers, so clearing is safe.
+_CONST_CACHE_MAX = 4096
+
 
 @dataclass
 class MetalState:
@@ -161,24 +173,68 @@ class MetalBackend:
             self._pipelines[name] = pipe
 
         self._classify_cache: dict[tuple, str] = {}
+        # Step 22: open command buffer / encoder for batched gate encoding.
+        self._open_cb = None
+        self._open_enc = None
+        self._encoded = 0
+        self._const_cache: dict[bytes, object] = {}
 
     # ---- buffer / readback helpers ---------------------------------------
 
+    def _flush(self) -> None:
+        """Commit any encoded-but-unsubmitted gate dispatches and wait.
+
+        Called before every host-side observation of the state buffer. A
+        default (serial) compute encoder executes its dispatches in encoding
+        order, so batching whole gate sequences into one command buffer
+        preserves gate ordering without explicit barriers.
+        """
+        if self._open_cb is None:
+            return
+        self._open_enc.endEncoding()
+        self._open_cb.commit()
+        self._open_cb.waitUntilCompleted()
+        self._open_cb = None
+        self._open_enc = None
+        self._encoded = 0
+
+    def _encoder(self):
+        if self._open_cb is None:
+            self._open_cb = self._queue.commandBuffer()
+            self._open_enc = self._open_cb.computeCommandEncoder()
+        return self._open_enc
+
     def _view(self, sv: MetalState) -> np.ndarray:
-        """Zero-copy, writable complex64 NumPy view over the buffer contents."""
+        """Zero-copy, writable complex64 NumPy view over the buffer contents.
+
+        Flushes pending gate dispatches first: this is the synchronization
+        point between the GPU command stream and host reads/writes.
+        """
+        self._flush()
         nbytes = (2**sv.n_qubits) * 8
         mv = sv.buf.contents().as_buffer(nbytes)  # ty: ignore[unresolved-attribute]
         return np.frombuffer(mv, dtype=np.complex64)
 
     def _const(self, arr: np.ndarray):
-        """A shared MTLBuffer holding a small constant array (matrix/index data)."""
+        """A shared MTLBuffer holding a small constant array (matrix/index data).
+
+        Cached by content: fused/repeated gates reuse identical matrices and
+        index tables, and the per-gate buffer allocation was measurable on the
+        batched encoding path.
+        """
         data = np.ascontiguousarray(arr).tobytes()
         # length must be > 0; callers pass at least one element.
-        return self._dev.newBufferWithBytes_length_options_(
-            data,
-            len(data),
-            Metal.MTLResourceStorageModeShared,  # ty: ignore[unresolved-attribute]
-        )
+        buf = self._const_cache.get(data)
+        if buf is None:
+            buf = self._dev.newBufferWithBytes_length_options_(
+                data,
+                len(data),
+                Metal.MTLResourceStorageModeShared,  # ty: ignore[unresolved-attribute]
+            )
+            if len(self._const_cache) >= _CONST_CACHE_MAX:
+                self._const_cache.clear()
+            self._const_cache[data] = buf
+        return buf
 
     def _grid(self, total: int):
         """Factor `total` (a power of two) into a 3D grid + threadgroup."""
@@ -190,13 +246,15 @@ class MetalBackend:
         return (gx, gy, gz), tg
 
     def _dispatch(self, name: str, total: int, buffers, scalars):
-        """Encode + run one compute pass over `total` threads.
+        """Encode one compute pass over `total` threads into the open command
+        buffer (Step 22). The pass is *not* submitted here: submission happens
+        at the next `_flush()` (observation boundary or `_FLUSH_EVERY` cap), so
+        a run of gates pays one commit + one CPU-GPU sync instead of one each.
 
         `buffers`: list of (mtl_buffer, index). `scalars`: list of (uint32, index).
         """
         (gx, gy, gz), tg = self._grid(total)
-        cb = self._queue.commandBuffer()
-        enc = cb.computeCommandEncoder()
+        enc = self._encoder()
         enc.setComputePipelineState_(self._pipelines[name])
         for buf, idx in buffers:
             enc.setBuffer_offset_atIndex_(buf, 0, idx)
@@ -206,9 +264,9 @@ class MetalBackend:
             Metal.MTLSizeMake(gx, gy, gz),  # ty: ignore[unresolved-attribute]
             Metal.MTLSizeMake(tg, 1, 1),  # ty: ignore[unresolved-attribute]
         )
-        enc.endEncoding()
-        cb.commit()
-        cb.waitUntilCompleted()
+        self._encoded += 1
+        if self._encoded >= _FLUSH_EVERY:
+            self._flush()
 
     # ---- Backend protocol ------------------------------------------------
 
