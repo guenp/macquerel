@@ -16,7 +16,7 @@ See the write-up: https://github.com/guenp/macquerel/pull/8#issuecomment-4636543
 
 Usage:
     uv run python benchmarks/bench_fusion_width.py
-    uv run python benchmarks/bench_fusion_width.py --qubits 16 20 22 24 --backend mlx
+    uv run python benchmarks/bench_fusion_width.py --qubits 16 20 22 24 --backend mlx metal
     uv run python benchmarks/bench_fusion_width.py --circuits QFT QAOA --reps 5
     uv run python benchmarks/bench_fusion_width.py --json benchmarks/data/fusion_width.json \
         --plot benchmarks/data/fusion_width.png
@@ -61,7 +61,7 @@ def _time_fuse_and_apply(backend, circuit: Circuit, width: int, n: int) -> float
 
 
 def _make_backends(requested: list[str] | None) -> dict:
-    names = requested or ["cpu", "mlx"]
+    names = requested or ["cpu", "mlx", "metal"]
     backends: dict = {}
     for name in names:
         try:
@@ -158,7 +158,7 @@ def make_plot(results: dict, path: str) -> None:
                 ys = [row[w] for w in WIDTHS]
                 color = cmap(i / max(1, len(ns) - 1))
                 ax.plot(WIDTHS, ys, marker="o", color=color, label=f"{n}q")
-                best_w = min(row, key=row.get)
+                best_w = min(row, key=lambda w: row[w])
                 ax.scatter(
                     [best_w],
                     [row[best_w]],
