@@ -31,12 +31,7 @@ import json
 import time
 from pathlib import Path
 
-from bench_circuits import (
-    _build_qaoa,
-    _build_qft,
-    _build_quantum_volume,
-    _build_random,
-)
+from circuits import build_qaoa, build_qft, build_quantum_volume, build_random
 
 from macquerel.backends.cpu import CPUBackend
 from macquerel.circuit import Circuit, Gate
@@ -45,10 +40,10 @@ from macquerel.compiler import fuse_gates
 WIDTHS = list(range(1, 7))
 
 CIRCUITS = {
-    "QFT": lambda n: _build_qft(n),
-    "random": lambda n: _build_random(n, depth=50),
-    "QAOA": lambda n: _build_qaoa(n),
-    "QV": lambda n: _build_quantum_volume(n),
+    "QFT": lambda n: build_qft(n),
+    "random": lambda n: build_random(n, depth=50),
+    "QAOA": lambda n: build_qaoa(n),
+    "QV": lambda n: build_quantum_volume(n),
 }
 
 

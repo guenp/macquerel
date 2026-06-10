@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-bench_statevector.py — cross-simulator statevector benchmark harness.
+bench_statevector.py - framework comparison statevector benchmark harness.
 
 Runs identical circuits (QFT, random, QAOA, GHZ) through:
-  - macquerel  (CPU, MLX, and/or Metal backend — Apple Silicon)
+  - macquerel  (CPU, MLX, and/or Metal backend - Apple Silicon)
   - Qiskit Aer (statevector method)
   - Qulacs
-  - qsim       (Google's CPU statevector simulator, via qsimcirq)
 
 and reports wall-clock statevector-build time vs qubit count, then charts it.
 
@@ -16,11 +15,18 @@ from the same gate set that macquerel supports
 (H, X, Y, Z, S, T, Rx, Ry, Rz, P, CX, CZ, SWAP, CP).
 
 Usage:
-    python bench_statevector.py                          # full sweep, all backends found
-    python bench_statevector.py --qubits 8 12 16 20      # custom qubit counts
-    python bench_statevector.py --circuits qft random    # subset of circuits
-    python bench_statevector.py --backends macquerel-mlx aer   # subset of backends
-    python bench_statevector.py --reps 5 --json out.json # more reps + save raw data
+    uv run python benchmarks/bench_statevector.py
+    uv run python benchmarks/bench_statevector.py --qubits 8 12 16 20
+    uv run python benchmarks/bench_statevector.py --circuits qft random
+    uv run python benchmarks/bench_statevector.py --backends macquerel-mlx aer
+    uv run python benchmarks/bench_statevector.py --reps 5 \
+        --json benchmarks/data/framework_comparison.json \
+        --plot benchmarks/data/framework_comparison.png
+
+    # Merge per-backend JSONs (e.g. one run per backend) into one chart:
+    uv run python benchmarks/bench_statevector.py \
+        --aggregate benchmarks/data/large \
+        --plot benchmarks/data/large/aggregate.png
 
 Precision note: macquerel defaults to complex64 (single precision); Qiskit Aer and
 Qulacs use complex128 (double). Single precision is ~2x lighter on memory bandwidth,
@@ -31,12 +37,14 @@ complex128 for a like-for-like comparison.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -269,56 +277,7 @@ def _make_qulacs():
     return build_and_run
 
 
-def _make_qsim():
-    import cirq
-    import qsimcirq
-
-    sim = qsimcirq.QSimSimulator()
-
-    def build_and_run(ops, n):
-        q = cirq.LineQubit.range(n)
-        circuit = cirq.Circuit()
-        for op in ops:
-            name = op[0]
-            if name == "h":
-                circuit.append(cirq.H(q[op[1]]))
-            elif name == "x":
-                circuit.append(cirq.X(q[op[1]]))
-            elif name == "y":
-                circuit.append(cirq.Y(q[op[1]]))
-            elif name == "z":
-                circuit.append(cirq.Z(q[op[1]]))
-            elif name == "s":
-                circuit.append(cirq.S(q[op[1]]))
-            elif name == "t":
-                circuit.append(cirq.T(q[op[1]]))
-            # cirq.rx/ry/rz use exp(-i theta/2 P), same convention as qiskit.
-            elif name == "rx":
-                circuit.append(cirq.rx(op[2])(q[op[1]]))
-            elif name == "ry":
-                circuit.append(cirq.ry(op[2])(q[op[1]]))
-            elif name == "rz":
-                circuit.append(cirq.rz(op[2])(q[op[1]]))
-            elif name == "p":
-                # phase gate diag(1, e^{i lam}) == Z**(lam/pi)
-                circuit.append(cirq.ZPowGate(exponent=op[2] / math.pi)(q[op[1]]))
-            elif name == "cx":
-                circuit.append(cirq.CNOT(q[op[1]], q[op[2]]))
-            elif name == "cz":
-                circuit.append(cirq.CZ(q[op[1]], q[op[2]]))
-            elif name == "swap":
-                circuit.append(cirq.SWAP(q[op[1]], q[op[2]]))
-            elif name == "cp":
-                circuit.append(cirq.CZPowGate(exponent=op[3] / math.pi)(q[op[1]], q[op[2]]))
-            else:
-                raise ValueError(f"unknown op {name}")
-        result = sim.simulate(circuit)
-        return result.final_state_vector
-
-    return build_and_run
-
-
-ALL_BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal", "aer", "qulacs", "qsim"]
+ALL_BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal", "aer", "qulacs"]
 
 
 def make_backend(name: str, double: bool):
@@ -333,8 +292,6 @@ def make_backend(name: str, double: bool):
         return _make_aer()
     if name == "qulacs":
         return _make_qulacs()
-    if name == "qsim":
-        return _make_qsim()
     raise ValueError(f"unknown backend {name}")
 
 
@@ -434,7 +391,6 @@ _PEAK_MULT = {
     "macquerel-metal": 1.6,
     "aer": 2.5,
     "qulacs": 2.5,
-    "qsim": 2.5,
 }
 
 
@@ -469,6 +425,38 @@ class Results:
         self.data.setdefault(circuit, {}).setdefault(backend, []).append((q, secs))
 
 
+def _expand_json_paths(items: list[str]) -> list[Path]:
+    """Turn a mix of file and directory arguments into a flat list of JSON files."""
+    paths: list[Path] = []
+    for item in items:
+        p = Path(item)
+        paths.extend(sorted(p.glob("*.json")) if p.is_dir() else [p])
+    return paths
+
+
+def load_results(paths: list[Path]) -> Results:
+    """Merge framework_comparison JSONs (e.g. one per backend) into one Results.
+
+    Later files win for any duplicated (circuit, backend, qubits) cell.
+    """
+    merged: dict = {}  # circuit -> backend -> {qubits: secs}
+    for path in paths:
+        doc = json.loads(path.read_text())
+        if doc.get("benchmark") != "framework_comparison":
+            continue
+        for circuit, by_backend in doc["results"].items():
+            for backend, series in by_backend.items():
+                cell = merged.setdefault(circuit, {}).setdefault(backend, {})
+                for q, secs in series:
+                    cell[int(q)] = secs
+    results = Results()
+    for circuit, by_backend in merged.items():
+        for backend, cell in by_backend.items():
+            for q in sorted(cell):
+                results.add(circuit, backend, q, cell[q])
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -476,10 +464,7 @@ def main():
     ap.add_argument("--qubits", type=int, nargs="+", default=[6, 8, 10, 12, 14, 16, 18, 20])
     ap.add_argument("--circuits", nargs="+", default=list(GENERATORS), choices=list(GENERATORS))
     ap.add_argument(
-        "--backends",
-        nargs="+",
-        default=None,
-        help="subset of: macquerel-cpu macquerel-mlx macquerel-metal aer qulacs qsim",
+        "--backends", nargs="+", default=None, help="subset of: " + " ".join(ALL_BACKENDS)
     )
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument(
@@ -488,7 +473,17 @@ def main():
         help="force macquerel to complex128 for like-for-like precision",
     )
     ap.add_argument("--json", default=None, help="save raw results to this path")
-    ap.add_argument("--plot", default="bench_results.png", help="output chart path")
+    ap.add_argument(
+        "--plot", default="benchmarks/data/framework_comparison.png", help="output chart path"
+    )
+    ap.add_argument(
+        "--aggregate",
+        nargs="+",
+        default=None,
+        metavar="PATH",
+        help="skip benchmarking; merge these result JSONs (files or directories of "
+        "per-backend runs) into a single chart written to --plot",
+    )
     ap.add_argument(
         "--no-isolate",
         action="store_true",
@@ -524,6 +519,17 @@ def main():
     if args.worker:
         return run_worker(args)
 
+    if args.aggregate:
+        paths = _expand_json_paths(args.aggregate)
+        results = load_results(paths)
+        if not results.data:
+            print("No framework_comparison JSONs found to aggregate.")
+            return
+        circuits = [c for c in args.circuits if c in results.data]
+        circuits += [c for c in results.data if c not in circuits]
+        make_plot(results, circuits, args.plot)
+        return
+
     isolate = not args.no_isolate
     backends = discover_backends(args.backends, args.double)
     live = [b for b in backends if b.available]
@@ -544,12 +550,26 @@ def main():
     print(f"Timing mode: {mode}")
     print(f"System RAM: {ram:.0f} GiB | per-cell memory budget: {budget:.0f} GiB\n")
 
+    def payload() -> dict:
+        return {
+            "benchmark": "framework_comparison",
+            "config": {
+                "qubits": args.qubits,
+                "circuits": args.circuits,
+                "backends": args.backends or ALL_BACKENDS,
+                "reps": args.reps,
+                "double": args.double,
+                "isolate": isolate,
+                "mem_budget_gib": budget,
+            },
+            "results": results.data,
+        }
+
     def checkpoint():
         if args.json:
-            import json
-
-            with open(args.json, "w") as f:
-                json.dump(results.data, f, indent=2)
+            path = Path(args.json)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload(), indent=2))
 
     results = Results()
     for circuit in args.circuits:
@@ -592,6 +612,16 @@ def main():
     make_plot(results, args.circuits, args.plot)
 
 
+# Stable colours so a backend reads the same across every panel.
+BACKEND_COLORS = {
+    "macquerel-metal": "#d62728",
+    "macquerel-mlx": "#1f77b4",
+    "macquerel-cpu": "#2ca02c",
+    "aer": "#9467bd",
+    "qulacs": "#ff7f0e",
+}
+
+
 def make_plot(results: Results, circuits, path):
     try:
         import matplotlib
@@ -611,17 +641,48 @@ def make_plot(results: Results, circuits, path):
 
     for idx, circuit in enumerate(circuits):
         ax = axes[idx // cols][idx % cols]
+        plotted = {}
         for backend, series in sorted(results.data[circuit].items()):
             series = sorted(series)
             xs = [q for q, _ in series]
             ys = [s * 1e3 for _, s in series]
-            ax.plot(xs, ys, marker="o", label=backend)
+            plotted[backend] = dict(zip(xs, ys, strict=True))
+            is_metal = backend == "macquerel-metal"
+            ax.plot(
+                xs,
+                ys,
+                marker="o",
+                markersize=4,
+                label=backend,
+                color=BACKEND_COLORS.get(backend),
+                linewidth=2 if is_metal else 1.3,
+                zorder=3 if is_metal else 2,
+            )
+        crossover = _metal_crossover(plotted)
+        if crossover is not None:
+            q, _ = crossover
+            metal_c = BACKEND_COLORS["macquerel-metal"]
+            xmax = max(max(s) for s in plotted.values())
+            ax.axvline(q, color=metal_c, linestyle="--", linewidth=1.5, alpha=0.7)
+            ax.axvspan(q, xmax, color=metal_c, alpha=0.05)
+            ax.annotate(
+                f"Metal wins\n≥ {q}q",
+                xy=(q, 0.0),
+                xycoords=("data", "axes fraction"),
+                xytext=(6, 8),
+                textcoords="offset points",
+                color=metal_c,
+                fontsize=9,
+                fontweight="bold",
+                ha="left",
+                va="bottom",
+            )
         ax.set_title(circuit)
         ax.set_xlabel("qubits")
         ax.set_ylabel("statevector time (ms)")
         ax.set_yscale("log")
         ax.grid(True, which="both", alpha=0.3)
-        ax.legend()
+        ax.legend(fontsize=8)
 
     for j in range(len(circuits), rows * cols):
         axes[j // cols][j % cols].axis("off")
@@ -629,6 +690,25 @@ def make_plot(results: Results, circuits, path):
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     print(f"Chart -> {path}")
+
+
+def _metal_crossover(plotted: dict[str, dict[int, float]]) -> tuple[int, float] | None:
+    """First qubit count where Metal beats every other backend present at that q.
+
+    This is where Metal becomes the more feasible choice: below it a CPU
+    simulator (qulacs/aer) wins on dispatch overhead, above it Metal's
+    bandwidth advantage takes over and eventually it is the only backend that
+    still fits in memory at all.
+    """
+    metal = plotted.get("macquerel-metal")
+    if not metal:
+        return None
+    others = {b: v for b, v in plotted.items() if b != "macquerel-metal"}
+    for q in sorted(metal):
+        rivals = [v[q] for v in others.values() if q in v]
+        if rivals and metal[q] < min(rivals):
+            return q, metal[q]
+    return None
 
 
 if __name__ == "__main__":

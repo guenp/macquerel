@@ -29,7 +29,15 @@ mlx = ["mlx>=0.3.0"]
 metal = ["pyobjc-framework-Metal>=10.0"]
 cirq = ["cirq-core>=1.3"]
 qiskit = ["qiskit>=1.0"]
+aer = ["qiskit>=1.0", "qiskit-aer>=0.14"]
+qulacs = ["qulacs>=0.6; python_version < '3.14'"]
 viz = ["matplotlib>=3.7"]
+bench = [
+    "matplotlib>=3.7",
+    "qiskit>=1.0",
+    "qiskit-aer>=0.14",
+    "qulacs>=0.6; python_version < '3.14'",
+]
 
 [project.urls]
 Homepage = "https://github.com/guenp/macquerel"
