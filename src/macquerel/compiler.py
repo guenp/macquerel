@@ -456,7 +456,17 @@ def remap_qubits(circuit: Circuit) -> Circuit:
 
     Returns the remapped Circuit. The permutation applied is deterministic: the
     qubit with the highest gate-access count receives index 0, etc. Ties are broken
-    by original qubit index (lower index wins).
+    by original qubit index (lower index wins). Use `remap_qubits_with_perm` when
+    the caller needs the permutation to invert the relabeling (Step 28).
+    """
+    return remap_qubits_with_perm(circuit)[0]
+
+
+def remap_qubits_with_perm(circuit: Circuit) -> tuple[Circuit, dict[int, int]]:
+    """Like `remap_qubits`, but also returns the applied permutation.
+
+    The permutation maps ``old qubit -> new qubit``: gate/measure label ``q`` in
+    the input circuit appears as ``perm[q]`` in the returned circuit.
     """
     freq: Counter[int] = Counter()
     for op in circuit.ops:
@@ -482,4 +492,4 @@ def remap_qubits(circuit: Circuit) -> Circuit:
             )
         elif isinstance(op, MeasureOp):
             result.ops.append(MeasureOp(qubits=[perm[q] for q in op.qubits]))
-    return result
+    return result, perm

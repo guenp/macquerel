@@ -4,8 +4,10 @@ from collections import Counter
 
 import numpy as np
 
+import os
+
 from macquerel.circuit import Circuit, Gate, MeasureOp
-from macquerel.compiler import fuse_gates
+from macquerel.compiler import fuse_gates, remap_qubits_with_perm
 
 try:
     import mlx.core as mx  # noqa: F401  # ty: ignore[unresolved-import]
@@ -88,16 +90,40 @@ class Simulator:
 
     def statevector(self, circuit: Circuit) -> np.ndarray:
         backend = self._get_backend(circuit.n_qubits)
-        sv = backend.allocate(circuit.n_qubits, self._np_dtype)
-        fused = fuse_gates(circuit)
+        n = circuit.n_qubits
+        sv = backend.allocate(n, self._np_dtype)
+        fused, perm = self._compile(circuit)
         for op in fused.ops:
             if isinstance(op, Gate):
                 sv = backend.apply_matrix(sv, op.matrix, op.targets, op.controls or None)
-        return backend.to_numpy(sv)
+        out = backend.to_numpy(sv)
+        if perm is not None:
+            # Undo the Step 28 relabeling: logical qubit q lives on axis perm[q]
+            # of the remapped state; transpose back to the caller's basis order.
+            axes = [perm[q] for q in range(n)]
+            out = np.ascontiguousarray(np.transpose(out.reshape((2,) * n), axes)).reshape(-1)
+        return out
+
+    def _compile(self, circuit: Circuit) -> tuple[Circuit, dict[int, int] | None]:
+        """Fusion (+ optional Step 28 qubit remapping) for the hot path.
+
+        Remapping relabels qubits so the hottest ones get the smallest strides.
+        Counts need no fix-up — `remap_qubits` rewrites MeasureOp labels in list
+        order, and `sample()` keys output bits by that order — but `statevector`
+        readback must invert the permutation (see statevector()). Disabled by
+        default pending the Step 28 A/B; enable with MACQUEREL_REMAP=1.
+        """
+        fused = fuse_gates(circuit)
+        if os.environ.get("MACQUEREL_REMAP") != "1":
+            return fused, None
+        remapped, perm = remap_qubits_with_perm(fused)
+        if all(perm[q] == q for q in perm):
+            return fused, None
+        return remapped, perm
 
     def run(self, circuit: Circuit, shots: int = 1000) -> Counter:
         backend = self._get_backend(circuit.n_qubits)
-        fused = fuse_gates(circuit)
+        fused, _ = self._compile(circuit)
 
         segments: list[list[Gate]] = []
         measurements: list[list[int]] = []
