@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run the per-step benchmark for the GPU-perf plan (docs/plan.md Steps 21-29).
+# Run the per-step benchmark for the GPU-perf plan (docs/plan.md Steps 21-30).
 #
 # Usage: run_step_bench.sh <step-label> <commit> <backend> [<backend> ...]
 #

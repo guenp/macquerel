@@ -14,17 +14,18 @@ original numbering for continuity with the completed record.
 
 ## v0.2.x — GPU backend performance: **SHIPPED (2026-06-10)**
 
-The performance line (Steps 21–28) is complete and merged on `gpu-perf-plan`. Every step
-was A/B-benchmarked per the measurement protocol; the full per-step data, charts, and
-justifications live in [`benchmarks/data/steps/`](../benchmarks/data/steps/README.md),
-and the shipped record with measured results is in
-[`plan_completed.md`](plan_completed.md#v02x--gpu-backend-performance-steps-21-28).
+The performance line (Steps 21–28, plus the post-line Step 30) is complete and merged
+on `gpu-perf-plan`. Every step was A/B-benchmarked per the measurement protocol; the
+full per-step data, charts, and justifications live in
+[`benchmarks/data/steps/`](../benchmarks/data/steps/README.md), and the shipped record
+with measured results is in
+[`plan_completed.md`](plan_completed.md#v02x--gpu-backend-performance-steps-21-30).
 
-Headline (geomean over circuits, vs the pre-line baseline): **Metal 2.2–2.8× at
-22–28q** (and 1.5–1.7× below that), **MLX 1.9–2.6× at 22–28q** (best cell: random@28
-14.6×), **CPU 1.6–2.0× at 20–22q**. Against Qiskit Aer, macquerel's auto path is at
-parity at 20q and wins 5–12× at 24q+. Auto-select is re-tuned to CPU ≤16q / Metal ≥17q
-(MLX serves 17–30q only when pyobjc-Metal is absent).
+Headline (geomean over circuits, vs the pre-line baseline): **Metal 2.5–2.9× across
+6–28q**, **MLX 1.9–2.6× at 22–28q** (best cell: random@28 14.7×), **CPU 1.5–2.0×**.
+Against Qiskit Aer, macquerel's auto path wins from 20q (random 28 vs 51 ms) and by
+5–12× at 24q+. Auto-select is re-tuned to CPU ≤16q / Metal ≥17q (MLX serves 17–30q
+only when pyobjc-Metal is absent).
 
 Not shipped: **Step 28** (qubit remapping) is wired but **off by default** — the A/B
 lost on every backend (readback inverse transpose outweighs any stride benefit; opt in

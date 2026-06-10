@@ -1,4 +1,4 @@
-# GPU-perf plan: per-step benchmark data (docs/plan.md Steps 21–28)
+# GPU-perf plan: per-step benchmark data (docs/plan.md Steps 21–30)
 
 One JSON per `(step, backend)` written by `benchmarks/run_step_bench.sh`, named
 `<step>-<commit>-<backend>.json`. Each step was benchmarked in an isolated git
@@ -9,10 +9,10 @@ touched (untouched backends carry forward). `benchmarks/plot_steps.py` renders:
   and the final state's speedup by qubit count (right);
 - `step_curves_{cpu,mlx,metal}.png` — per-circuit runtime curves, one line per step.
 
-Steps appear in **execution order**: 21 → 22 → 24 → 23 → 25 → 26 → 27 → 28
+Steps appear in **execution order**: 21 → 22 → 24 → 23 → 25 → 26 → 27 → 28 → 30
 (24 was moved before 23 after review, so the memory-cliff fix wouldn't confound
-23's large-n A/B). All numbers: M5 Max, 128 GB, macOS, MLX 0.31.2, min of 3
-reps, subprocess-isolated cells.
+23's large-n A/B; 30 landed after the line shipped). All numbers: M5 Max,
+128 GB, macOS, MLX 0.31.2, min of 3 reps, subprocess-isolated cells.
 
 ## Per-step results and why
 
@@ -91,22 +91,39 @@ transpose, and the GPU kernels are stride-insensitive so there is no win to
 pay for it. Per the plan's benchmark gate it ships disabled
 (`MACQUEREL_REMAP=1` opts in).
 
-## Cumulative result (Step 27 state vs baseline)
+**Step 30 (`3a745fb`) — per-backend, qubit-aware fusion-width defaults.
+metal 1.30× / cpu 1.32× geomean step-over-step; mlx 1.01× (no-change
+control).** The width sweep (`benchmarks/data/fusion_width.json`, widths 1–6
+× 4 circuits × 16–24q) showed the optimal `max_fused_qubits` became a backend
+property after Steps 22/25: with Metal's per-gate overhead mostly gone, wide
+fusion at small/mid n only pays host-side matrix composition and densifies
+cheap diagonal/monomial gates. Defaults are now tiered per (backend, n):
+**metal 2 ≤22q, cpu 3 ≤18q, otherwise 4; mlx 4 everywhere**. Wins are
+1.3–2.15× at 6–20q (metal qft@20 21→10 ms, random@20 41→28 ms; cpu 1.4–1.8×
+≤16q) with large n flat at 1.00×. The tiering is load-bearing: a *flat*
+metal width of 2 won the sweep's normalized aggregate (1.58× vs width 4) but
+regressed random@24–28 by 2.7–3.7× in the step A/B — at 24q+ every backend
+is apply-bound and width 4 still wins. One compromise cell remains: metal
+random@22 is 0.85× (the other 22q circuits win 1.07–1.57×, so the 22q
+boundary nets ~1.17×).
+
+## Cumulative result (Step 30 state vs baseline)
 
 Geomean over circuits, by qubit count — see `step_speedups.png` right panel:
 
 | backend | 16q | 20q | 22q | 24q | 26q | 28q | best single cell |
 |---|---|---|---|---|---|---|---|
-| metal | 1.53× | 1.68× | 2.21× | 2.52× | 2.82× | 2.73× | random@28 6.2× |
-| mlx | 0.99× | 1.24× | 1.87× | 2.46× | 2.34× | 2.58× | random@28 **14.6×** |
-| cpu | 1.06× | 1.63× | 1.95× | — | — | — | qft@22 3.5× |
+| metal | 2.63× | 2.61× | 2.58× | 2.54× | 2.85× | 2.72× | random@28 6.1× |
+| mlx | 0.96× | 1.24× | 1.86× | 2.45× | 2.34× | 2.59× | random@28 **14.7×** |
+| cpu | 1.49× | 1.65× | 1.97× | — | — | — | qft@22 3.6× |
 
 Against the strongest external rival in `benchmarks/data/large` (Qiskit Aer):
-at 20q macquerel-metal is at parity (random 41 vs 51 ms, qft 21 vs 19 ms), and
-from 22q up it wins decisively — random@24 99 ms vs Aer's 914 ms (9.2×),
-qft@24 63 vs 342 ms, qaoa@24 46 vs 271 ms. Below ~16q Aer/Qulacs still win on
-dispatch overhead (auto-select keeps CPU there). The plan's success criteria:
-G2 (Metal crossover, was ≥22q) landed at ~20q; G3 (28q cliff) gone; G4
-(auto picks measured-fastest) re-tuned to CPU ≤16q / Metal ≥17q; G1 holds for
-the system (Metal tier) everywhere ≥20q, with MLX itself still behind Aer only
-on QFT at 24q+. Step 29 (custom MLX dense kernel) was not needed.
+at 20q macquerel-metal now wins outright (random 28 vs 51 ms, qft 10 vs
+19 ms — it was at parity before Step 30), and from 22q up it wins decisively
+— random@24 99 ms vs Aer's 914 ms (9.2×), qft@24 63 vs 342 ms, qaoa@24 46 vs
+271 ms. Below ~16q Aer/Qulacs still win on dispatch overhead (auto-select
+keeps CPU there). The plan's success criteria: G2 (Metal crossover, was ≥22q)
+landed at ~20q; G3 (28q cliff) gone; G4 (auto picks measured-fastest)
+re-tuned to CPU ≤16q / Metal ≥17q; G1 holds for the system (Metal tier)
+everywhere ≥20q, with MLX itself still behind Aer only on QFT at 24q+.
+Step 29 (custom MLX dense kernel) was not needed.

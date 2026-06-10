@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot per-step speedups for the GPU-perf plan (docs/plan.md Steps 21-29).
+"""Plot per-step speedups for the GPU-perf plan (docs/plan.md Steps 21-30).
 
 Reads the per-step JSONs written by run_step_bench.sh into benchmarks/data/steps/
 (named ``<step>-<commit>-<backend>.json``) and produces:
@@ -37,6 +37,7 @@ STEP_ORDER = [
     "step26",
     "step27",
     "step28",
+    "step30",
 ]
 
 BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal"]

@@ -404,7 +404,7 @@ count by its own fastest width, and picks the lowest aggregate (ties within 2% b
 
 ---
 
-## v0.2.x — GPU backend performance (Steps 21-28)
+## v0.2.x — GPU backend performance (Steps 21-30)
 
 > **Status: SHIPPED (2026-06-10), branch `gpu-perf-plan`.** Goal: make the MLX and Metal
 > backends competitive with Qiskit Aer / Qulacs on runtime. Every step was A/B-benchmarked
@@ -484,13 +484,32 @@ list order). The A/B lost on every backend/circuit at 24q (metal qft 61→79 ms,
 89→126 ms): the readback inverse transpose outweighs any stride benefit and the GPU
 kernels are stride-insensitive. Ships disabled; `MACQUEREL_REMAP=1` opts in.
 
+### Step 30: Per-backend, qubit-aware fusion-width defaults ✅ (`3a745fb`) — metal 1.30× / cpu 1.32× geomean
+
+A fusion-width re-sweep (`benchmarks/data/fusion_width.json`: widths 1–6 ×
+{QFT, random, QAOA, QV} × 16–24q, all three backends) showed the optimal
+`max_fused_qubits` became a backend property after Steps 22/25: with Metal's per-gate
+overhead mostly gone, wide fusion at small/mid n only pays host-side matrix
+composition and densifies cheap diagonal/monomial gates. Defaults are now resolved per
+(backend, qubit count) by `default_fusion_width`: **metal 2 ≤22q, cpu 3 ≤18q,
+otherwise 4; mlx 4 everywhere** — `fuse_gates` takes the target backend and the
+Simulator passes the one it selected; `MACQUEREL_FUSION_WIDTH` still pins a global
+width and `auto` still runs the autotuner. The qubit tiering is load-bearing: a *flat*
+metal width 2 won the sweep's normalized aggregate (1.58× vs width 4) but the step A/B
+exposed 2.7–3.7× regressions on random@24–28 — at 24q+ every backend is apply-bound
+and 4 still wins. Shipped A/B: metal 1.3–2.15× at 6–20q (qft@20 21→10 ms, random@20
+41→28 ms), cpu 1.4–1.8× ≤16q, large n flat at 1.00×; mlx re-measured as a no-change
+control (1.01×). Known compromise: metal random@22 0.85× (22q nets ~1.17× across
+circuits).
+
 ### Net result
 
-Cumulative vs the line's baseline (geomean over ghz/qft/random/qaoa): **Metal 2.2–2.8×
-at 22–28q** and 1.5–1.7× below; **MLX 1.9–2.6× at 22–28q** (best cell random@28
-**14.6×**: 40.0 s → 2.7 s); **CPU 1.6–2.0× at 20–22q**. Versus Qiskit Aer
-(`benchmarks/data/large`): parity at 20q, 5–12× faster at 24q+ (random@24 99 ms vs
-914 ms). The release-regression harness (`bench_versions.py`) shows current faster than
-v0.2.0 on every backend at 8–12q. G3 (28q cliff) and G4 (auto picks measured-fastest)
-met; G2 (Metal crossover) moved from ≥22q to ~20q; G1 met at the system level (Metal
-tier), with MLX itself still behind Aer only on QFT at 24q+.
+Cumulative vs the line's baseline (geomean over ghz/qft/random/qaoa): **Metal 2.5–2.9×
+across 6–28q**; **MLX 1.9–2.6× at 22–28q** (best cell random@28 **14.7×**: 40.0 s →
+2.7 s); **CPU 1.5–2.0×** (best cell qft@22 3.6×). Versus Qiskit Aer
+(`benchmarks/data/large`): macquerel-metal wins from 20q (random 28 vs 51 ms), 5–12×
+faster at 24q+ (random@24 99 ms vs 914 ms). The release-regression harness
+(`bench_versions.py`) shows current faster than v0.2.0 on every backend at 8–12q. G3
+(28q cliff) and G4 (auto picks measured-fastest) met; G2 (Metal crossover) moved from
+≥22q to ~20q; G1 met at the system level (Metal tier), with MLX itself still behind
+Aer only on QFT at 24q+.
