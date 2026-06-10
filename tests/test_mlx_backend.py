@@ -160,6 +160,84 @@ def test_fused_random_circuit_differential(cpu, mlx_backend):
         assert np.allclose(ref, got, atol=1e-5), f"seed={seed} diff={np.max(np.abs(ref - got))}"
 
 
+# --- Step 23: axis-order tracking (deferred dense-gate transpose) ---
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_mixed_kind_fuzz_differential(cpu, mlx_backend, seed):
+    """Interleaved dense/diagonal/permutation/controlled gates vs the CPU oracle.
+
+    Step 23 defers the dense-gate axis permutation, so every other gate kind
+    (and the controlled path) must correctly translate its targets through a
+    non-trivial axis map. This fuzz drives all four paths against each other.
+    """
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(4, 8))
+    sc, sm = cpu.allocate(n), mlx_backend.allocate(n)
+    for _ in range(60):
+        r = rng.random()
+        if r < 0.25:  # dense 1q (scrambles the axis order)
+            mat, tgts, ctl = g.Ry(float(rng.uniform(0, 6.28))), [int(rng.integers(n))], None
+        elif r < 0.4:  # dense 2q (Haar-ish via composed rotations is overkill; H⊗Ry)
+            q = rng.choice(n, size=2, replace=False)
+            mat = np.kron(g.H(), g.Ry(float(rng.uniform(0, 6.28)))).astype(np.complex64)
+            tgts, ctl = [int(q[0]), int(q[1])], None
+        elif r < 0.6:  # diagonal
+            mat, tgts, ctl = g.Rz(float(rng.uniform(0, 6.28))), [int(rng.integers(n))], None
+        elif r < 0.8:  # permutation
+            q = rng.choice(n, size=2, replace=False)
+            mat, tgts, ctl = (g.CNOT(), [int(q[0]), int(q[1])], None)
+        else:  # controlled dense
+            q = rng.choice(n, size=2, replace=False)
+            mat, tgts, ctl = g.Rx(float(rng.uniform(0, 6.28))), [int(q[0])], [int(q[1])]
+        sc = cpu.apply_matrix(sc, mat, tgts, ctl)
+        sm = mlx_backend.apply_matrix(sm, mat, tgts, ctl)
+    ref, got = np.asarray(sc).ravel(), mlx_backend.to_numpy(sm).ravel()
+    assert np.allclose(ref, got, atol=1e-4), f"n={n} seed={seed} diff={np.max(np.abs(ref - got))}"
+
+
+def test_readback_order_after_dense_gate(cpu, mlx_backend):
+    """A dense gate on a middle qubit leaves a non-trivial axis permutation;
+    to_numpy must still return canonical basis order."""
+    n = 4
+    sc, sm = cpu.allocate(n), mlx_backend.allocate(n)
+    ops = [(g.H(), [2]), (g.Ry(0.9), [1]), (g.H(), [0])]
+    for mat, tgts in ops:
+        sc = cpu.apply_matrix(sc, mat, tgts)
+        sm = mlx_backend.apply_matrix(sm, mat, tgts)
+    assert np.allclose(np.asarray(sc), mlx_backend.to_numpy(sm), atol=1e-5)
+
+
+def test_partial_abs2sum_with_pending_permutation(cpu, mlx_backend):
+    """abs2sum over a qubit subset must canonicalize the deferred layout first."""
+    n = 5
+    sc, sm = cpu.allocate(n), mlx_backend.allocate(n)
+    rng = np.random.default_rng(5)
+    for _ in range(12):
+        q = int(rng.integers(n))
+        mat = g.Ry(float(rng.uniform(0, 6.28)))
+        sc = cpu.apply_matrix(sc, mat, [q])
+        sm = mlx_backend.apply_matrix(sm, mat, [q])
+        q2 = rng.choice(n, size=2, replace=False)
+        sc = cpu.apply_matrix(sc, g.CNOT(), [int(q2[0]), int(q2[1])])
+        sm = mlx_backend.apply_matrix(sm, g.CNOT(), [int(q2[0]), int(q2[1])])
+    for subset in ([0], [1, 3], [4, 0, 2]):
+        assert np.allclose(cpu.abs2sum(sc, subset), mlx_backend.abs2sum(sm, subset), atol=1e-5)
+
+
+def test_measure_collapse_with_pending_permutation(mlx_backend):
+    """measure() after dense gates (pending axis map) collapses correctly and
+    later gates see the collapsed, canonical state."""
+    backend = type(mlx_backend)(seed=9)
+    sv = backend.allocate(3)
+    sv = backend.apply_matrix(sv, g.H(), [1])  # dense -> perm (1,0,2)
+    sv = backend.apply_matrix(sv, g.CNOT(), [1, 2])
+    (outcome,) = backend.measure(sv, [1], collapse=True)
+    sv = backend.apply_matrix(sv, g.X(), [1])
+    probs = backend.abs2sum(sv, [1])
+    assert np.isclose(probs[1 - outcome], 1.0, atol=1e-5)
+
+
 def test_async_eval_cadence_preserves_state(cpu, mlx_backend, monkeypatch):
     """Step 24: periodic mx.async_eval mid-circuit must not change results.
 
