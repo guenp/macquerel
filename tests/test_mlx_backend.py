@@ -160,6 +160,34 @@ def test_fused_random_circuit_differential(cpu, mlx_backend):
         assert np.allclose(ref, got, atol=1e-5), f"seed={seed} diff={np.max(np.abs(ref - got))}"
 
 
+def test_async_eval_cadence_preserves_state(cpu, mlx_backend, monkeypatch):
+    """Step 24: periodic mx.async_eval mid-circuit must not change results.
+
+    The cadence only fires at >= _ASYNC_EVAL_MIN_QUBITS in production; force it
+    on for a small state so CI exercises the interleaved async_eval path.
+    """
+    import macquerel.backends.mlx_backend as mb
+
+    monkeypatch.setattr(mb, "_ASYNC_EVAL_MIN_QUBITS", 1)
+    monkeypatch.setattr(mb, "_ASYNC_EVAL_INTERVAL", 3)
+    rng = np.random.default_rng(2)
+    n = 5
+    ops = []
+    for _ in range(40):
+        r = rng.random()
+        if r < 0.3:
+            ops.append((g.CNOT(), [int(q) for q in rng.choice(n, 2, replace=False)]))
+        elif r < 0.6:
+            ops.append((g.Rz(float(rng.uniform(0, 6.28))), [int(rng.integers(n))]))
+        else:
+            ops.append((g.Ry(float(rng.uniform(0, 6.28))), [int(rng.integers(n))]))
+    sc, sm = cpu.allocate(n), mlx_backend.allocate(n)
+    for mat, tgts in ops:
+        sc = cpu.apply_matrix(sc, mat, tgts)
+        sm = mlx_backend.apply_matrix(sm, mat, tgts)
+    assert np.allclose(np.asarray(sc), mlx_backend.to_numpy(sm), atol=1e-5)
+
+
 # --- Step 19: shot-batch autotuning / batched sampling ---
 
 

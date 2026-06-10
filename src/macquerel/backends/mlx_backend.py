@@ -13,6 +13,20 @@ except ImportError:
     _MLX_AVAILABLE = False
 
 
+# Step 24: kick off (asynchronous) evaluation of the state every this many
+# gate applications, but only for states of at least _ASYNC_EVAL_MIN_QUBITS.
+# P1 (defer evaluation) deliberately stopped eval-ing per gate, but with *no*
+# synchronization between observation boundaries a depth-d circuit keeps O(d)
+# full-width temporaries in the lazy graph: at 26-28q the observed peak is
+# >= ~16x the state size, which drives the machine into swap (the 28q cliff,
+# see docs/plan.md baseline). async_eval keeps the pipeline full while letting
+# MLX retire and free earlier intermediates, bounding the working set. Small
+# states keep the fully-lazy P1 behavior - their graphs are tiny and the win
+# there came precisely from not synchronizing.
+_ASYNC_EVAL_INTERVAL = 16
+_ASYNC_EVAL_MIN_QUBITS = 24
+
+
 @dataclass
 class MLXState:
     """Statevector held as a single complex64 mx.array (P4: native complex storage)."""
@@ -62,6 +76,8 @@ class MLXBackend:
         # arithmetic into one kernel and caches the trace per input shape.
         self._diag_kernel = mx.compile(_diag_phase_kernel)
         self._perm_kernel = mx.compile(_perm_gather_kernel)
+        # Step 24: gate applications since the last async_eval kick.
+        self._applies_since_eval = 0
 
     def _arange(self, n: int) -> mx.array:
         """Cached, evaluated uint32 [0, 2**n) index vector (one per qubit count)."""
@@ -106,10 +122,22 @@ class MLXBackend:
         kind = self._classify(mat)
 
         if kind == "diagonal" and not controls:
-            return self._apply_diagonal(sv, mat, targets)
-        if kind == "permutation" and not controls:
-            return self._apply_permutation(sv, mat, targets)
-        return self._apply_general(sv, mat, targets, controls)
+            new = self._apply_diagonal(sv, mat, targets)
+        elif kind == "permutation" and not controls:
+            new = self._apply_permutation(sv, mat, targets)
+        else:
+            new = self._apply_general(sv, mat, targets, controls)
+        self._maybe_async_eval(new)
+        return new
+
+    def _maybe_async_eval(self, sv: MLXState) -> None:
+        """Step 24: periodically start evaluating the state without blocking."""
+        if sv.n_qubits < _ASYNC_EVAL_MIN_QUBITS:
+            return
+        self._applies_since_eval += 1
+        if self._applies_since_eval >= _ASYNC_EVAL_INTERVAL:
+            mx.async_eval(sv.data)
+            self._applies_since_eval = 0
 
     def _gate_index(self, targets: list[int], n: int) -> mx.array:
         """Pack the k target bits of every basis index into a gate-row index."""
