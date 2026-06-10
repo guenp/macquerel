@@ -53,12 +53,18 @@ Reading of the data:
 
 ### Success criteria
 
-- **G1:** MLX ≥ parity with Aer on random/QFT/QAOA at 18–26q (it already wins GHZ ≤22q).
+- **G1:** MLX ≥ parity with Aer on random/QFT/QAOA at 18–26q (GHZ is close to
+  parity by 22q; Aer still leads it at 18–20q).
 - **G2:** Metal's "beats every rival" crossover moves from ≥22q down to ≤18q
   (`bench_statevector.py` annotates this crossover on the chart).
 - **G3:** the 26–28q MLX cliff is gone (smooth bandwidth-bound scaling to its 30q cap).
 - **G4:** `backend="auto"` always selects the measured-fastest backend tier.
 - **G5:** no regression on `bench_versions.py` CI (CPU path untouched).
+
+**Execution order (updated after review):** 21 → 22 → **24 → 23** → 25 → 26 → 27/28.
+Step 24 lands before Step 23: it is the simpler change, it does not touch basis-order
+semantics, and removing the 26–28q memory cliff first means Step 23's large-n A/B
+measures the pure bandwidth win rather than a mix of bandwidth and swap relief.
 
 ### Step 21: Auto-select — route the 22q+ tier to Metal (quick win)
 
@@ -81,6 +87,14 @@ boundaries — `to_numpy` / `measure` / `sample` / `abs2sum` — and every N enc
 
 - **Cache `_const` buffers** keyed by content bytes — fused circuits reuse identical
   matrices/index tables, and today every gate allocates fresh `MTLBuffer`s.
+- **Hard requirement — constant-buffer lifetime:** today `_const` buffers are safe
+  because `_dispatch` waits before returning; with deferred submission, every
+  `MTLBuffer` referenced by an encoded-but-uncommitted dispatch must stay alive until
+  its command buffer completes. The default `commandBuffer()` retains referenced
+  resources (we must *not* switch to `commandBufferWithUnretainedReferences`), and the
+  content cache holds Python references on top. A cache reset while dispatches are in
+  flight must be covered by a dedicated test (shrink the cache cap so eviction happens
+  mid-encoding).
 - Reuse a small pool for the 4-byte scalar `setBytes` payloads (already cheap; verify).
 
 *Expected:* the fixed ~ms/gate cost that makes Metal slowest below 20q collapses to
@@ -103,6 +117,14 @@ einsum attempt P5 was a different approach and was rightly reverted). Plan:
 
 *Expected:* dense/fused gates drop from 2 full-state passes to 1 — up to ~2× on
 random/QV-style circuits at ≥20q, which is precisely the 1.6–1.9× gap to Aer (G1).
+
+*Risk:* this is the **highest correctness-risk step** in the line. The
+diagonal/permutation paths build linear indices assuming canonical bit positions
+(`_gate_index`), and every readback/sampling path assumes canonical basis order, so the
+axis map must be threaded through all of them. Before benchmarking it needs: mixed-kind
+fuzz tests (dense + diagonal + permutation + controlled interleaved in one circuit),
+partial-qubit `sample`/`abs2sum` against the CPU oracle, and readback-ordering tests
+after non-trivial permutations. Scheduled *after* Step 24 (see execution order).
 
 ### Step 24: MLX — bound lazy-graph memory with periodic `mx.async_eval`
 
@@ -160,11 +182,20 @@ multiplies the value of Steps 22–23 since both backends' per-pass costs drop.
 
 ### Step 28: Wire `remap_qubits` into the hot path (benchmark-gated)
 
-Step 13 implemented the Doi–Horii remap pass but the `Simulator` never calls it. After
-fusion, remap so the hottest qubits get the lowest indices (smallest strides), and undo
-at the boundary: bit-relabel for `sample`/`measure`, one final permutation pass for
-`statevector()`. With Step 23's axis-order tracking the final permutation can fold into
-the existing readback materialization for free. Keep only if A/B wins.
+Step 13 implemented the Doi–Horii remap pass but the `Simulator` never calls it, and
+its current signature is insufficient for the hot path: it returns only the remapped
+circuit (it rewrites `MeasureOp` qubit labels in place), not the permutation. Spec for
+wiring it in:
+
+- `remap_qubits` (or a wrapper) must return **both** the remapped circuit and the
+  applied permutation so the simulator can invert it at the boundary.
+- `statevector()` must return amplitudes in the **caller's canonical basis order**
+  (apply the inverse permutation at readback; with Step 23's axis-order tracking this
+  folds into the existing readback materialization for free).
+- `run()`/`sample()` must report counts keyed by the **caller's logical qubit order**,
+  not the remapped physical order (bit-relabel before counting).
+
+Keep only if A/B wins.
 
 ### Step 29 (stretch): MLX — custom group-based dense kernel
 

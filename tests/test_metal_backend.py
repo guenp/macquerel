@@ -114,6 +114,29 @@ def test_deep_circuit_crosses_flush_cap(cpu, metal):
     )
 
 
+def test_const_cache_reset_mid_encoding(cpu, metal, monkeypatch):
+    """Const buffers must survive a cache reset while dispatches are in flight.
+
+    With deferred submission (Step 22), an encoded dispatch references its
+    matrix/index MTLBuffers until the command buffer completes. Shrink the cache
+    cap so eviction resets happen repeatedly mid-encoding; correctness then
+    rests on the command buffer's own retention of referenced resources.
+    """
+    import macquerel.backends.metal_backend as mb
+
+    monkeypatch.setattr(mb, "_CONST_CACHE_MAX", 2)
+    rng = np.random.default_rng(11)
+    n = 4
+    # Distinct rotation angles -> distinct matrices -> constant cache churn.
+    ops = [(g.Rz(float(rng.uniform(0, 6.28))), [int(rng.integers(n))]) for _ in range(50)]
+    ops += [(g.Rx(float(rng.uniform(0, 6.28))), [int(rng.integers(n))]) for _ in range(50)]
+    sv_cpu = cpu.to_numpy(_apply_gates(cpu, cpu.allocate(n), ops))
+    sv_metal = metal.to_numpy(_apply_gates(metal, metal.allocate(n), ops))
+    assert np.allclose(sv_cpu, sv_metal, atol=1e-4), (
+        f"max diff: {np.max(np.abs(sv_cpu - sv_metal))}"
+    )
+
+
 def test_gates_after_measure_see_collapsed_state(metal):
     """Host-side collapse writes must be ordered against batched GPU dispatches."""
     backend = MetalBackend(seed=3)
