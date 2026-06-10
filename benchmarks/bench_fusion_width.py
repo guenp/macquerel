@@ -3,20 +3,24 @@ bench_fusion_width.py — run time vs max_fused_qubits.
 
 Sweeps the gate-fusion width (`max_fused_qubits` ∈ 1..6) across qubit counts and
 circuits, timing the real Simulator cost model (fuse + apply) on the available
-backends. The point is to show *why macquerel defaults to width 4*:
+backends. The point is to show *why macquerel's default width is per-(backend,
+qubit count)* (Step 30 — metal 2 up to 22q, cpu 3 up to 18q, otherwise 4):
 
   - The optimal width drifts upward with qubit count. At small n the one-time
     matrix-composition cost dominates the apply and rewards narrow fusion; as n
     grows the apply (a full pass over the 2**n state) dominates and wider fusion
     wins by making fewer passes.
-  - No single width is best everywhere, but width 4 wins on the normalized
-    aggregate across the measured 17-30q MLX tier — hence the default.
+  - It also differs per backend: fusion amortizes per-gate dispatch overhead,
+    and Metal has little of it left (batched command buffers + specialized
+    kernels, Steps 22/25), so narrow fusion wins there through ~22q; MLX's
+    lazy-graph overhead is the largest, so it rewards width 4 throughout; CPU
+    sits in between. At 24q+ every backend is apply-bound and 4 wins everywhere.
 
 See the write-up: https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327
 
 Usage:
     uv run python benchmarks/bench_fusion_width.py
-    uv run python benchmarks/bench_fusion_width.py --qubits 16 20 22 24 --backend mlx
+    uv run python benchmarks/bench_fusion_width.py --qubits 16 20 22 24 --backend mlx metal
     uv run python benchmarks/bench_fusion_width.py --circuits QFT QAOA --reps 5
     uv run python benchmarks/bench_fusion_width.py --json benchmarks/data/fusion_width.json \
         --plot benchmarks/data/fusion_width.png
@@ -35,7 +39,7 @@ from circuits import build_qaoa, build_qft, build_quantum_volume, build_random
 
 from macquerel.backends.cpu import CPUBackend
 from macquerel.circuit import Circuit, Gate
-from macquerel.compiler import fuse_gates
+from macquerel.compiler import default_fusion_width, fuse_gates
 
 WIDTHS = list(range(1, 7))
 
@@ -61,7 +65,7 @@ def _time_fuse_and_apply(backend, circuit: Circuit, width: int, n: int) -> float
 
 
 def _make_backends(requested: list[str] | None) -> dict:
-    names = requested or ["cpu", "mlx"]
+    names = requested or ["cpu", "mlx", "metal"]
     backends: dict = {}
     for name in names:
         try:
@@ -101,7 +105,7 @@ def benchmark(qubit_counts: list[int], circuits: list[str], backends: dict, reps
                     secs = min(_time_fuse_and_apply(backend, circuit, w, n) for _ in range(reps))
                     row[w] = round(secs * 1e3, 3)
                 results[bname][cname][str(n)] = row
-                best_w = min(row, key=row.get)
+                best_w = min(row, key=lambda w: row[w])
                 cells = "  ".join(f"{row[w]:7.2f}" for w in WIDTHS)
                 print(f"    {n:<3d} {cells}   w{best_w}")
     return results
@@ -125,7 +129,7 @@ def _aggregate_optima(results: dict) -> None:
         if not cells:
             continue
         norm = {w: round(agg[w] / cells, 3) for w in WIDTHS}
-        winner = min(norm, key=norm.get)
+        winner = min(norm, key=lambda w: norm[w])
         print(f"  {bname:6s}: {norm}  -> aggregate winner = w{winner}")
 
 
@@ -149,6 +153,9 @@ def make_plot(results: dict, path: str) -> None:
 
     for r, bname in enumerate(backends):
         by_circuit = results[bname]
+        ns_all = sorted({int(n) for by_n in by_circuit.values() for n in by_n})
+        # The default is qubit-aware; mark every width it takes over the sweep.
+        defaults = sorted({default_fusion_width(bname, n) for n in ns_all})
         for c, cname in enumerate(circuits):
             ax = axes[r][c]
             by_n = by_circuit.get(cname, {})
@@ -158,7 +165,7 @@ def make_plot(results: dict, path: str) -> None:
                 ys = [row[w] for w in WIDTHS]
                 color = cmap(i / max(1, len(ns) - 1))
                 ax.plot(WIDTHS, ys, marker="o", color=color, label=f"{n}q")
-                best_w = min(row, key=row.get)
+                best_w = min(row, key=lambda w: row[w])
                 ax.scatter(
                     [best_w],
                     [row[best_w]],
@@ -168,7 +175,8 @@ def make_plot(results: dict, path: str) -> None:
                     linewidths=2,
                     zorder=5,
                 )
-            ax.axvline(4, color="crimson", ls="--", lw=1, alpha=0.6)
+            for w in defaults:
+                ax.axvline(w, color="crimson", ls="--", lw=1, alpha=0.6)
             ax.set_title(f"{bname} · {cname}")
             ax.set_xlabel("max_fused_qubits")
             ax.set_ylabel("fuse+apply (ms)")
@@ -203,7 +211,15 @@ def make_plot(results: dict, path: str) -> None:
                 zorder=5,
                 label=f"winner w{winner}",
             )
-            ax.axvline(4, color="crimson", ls="--", lw=1, alpha=0.6, label="default w4")
+            for w in defaults:
+                ax.axvline(
+                    w,
+                    color="crimson",
+                    ls="--",
+                    lw=1,
+                    alpha=0.6,
+                    label=f"default w{w}",
+                )
             ax.legend(fontsize=8)
         ax.set_title(f"{bname} · aggregate (normalized)")
         ax.set_xlabel("max_fused_qubits")
@@ -212,8 +228,8 @@ def make_plot(results: dict, path: str) -> None:
         ax.grid(True, which="both", alpha=0.3)
 
     fig.suptitle(
-        "Run time vs max_fused_qubits — optimal width drifts up with qubit count; "
-        "4 is the robust default (red dashed)",
+        "Run time vs max_fused_qubits — optimal width drifts up with qubit count "
+        "and varies per backend; red dashed = that backend's qubit-aware defaults",
         fontsize=12,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.97))

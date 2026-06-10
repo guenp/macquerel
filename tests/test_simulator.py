@@ -113,27 +113,63 @@ def test_auto_backend_default():
     assert sum(result.values()) == 500
 
 
+def test_remap_env_statevector_matches(monkeypatch):
+    """Step 28: MACQUEREL_REMAP=1 must return the identical statevector."""
+    import numpy as np
+
+    rng = np.random.default_rng(6)
+    n = 6
+    circuit = Circuit(n)
+    for _ in range(25):
+        r = rng.random()
+        if r < 0.4:
+            a, b = rng.choice(n, size=2, replace=False)
+            circuit.cx(int(a), int(b))
+        else:
+            circuit.ry(int(rng.integers(n)), float(rng.uniform(0, 3.14)))
+    monkeypatch.delenv("MACQUEREL_REMAP", raising=False)
+    base = Simulator(backend="cpu").statevector(circuit)
+    monkeypatch.setenv("MACQUEREL_REMAP", "1")
+    remapped = Simulator(backend="cpu").statevector(circuit)
+    assert np.allclose(base, remapped, atol=1e-5)
+
+
+def test_remap_env_counts_match(monkeypatch):
+    """Step 28: remapped sampling must report counts in caller qubit order."""
+    circuit = Circuit(3)
+    circuit.h(2)
+    circuit.cx(2, 0)
+    circuit.measure_all()
+    monkeypatch.setenv("MACQUEREL_REMAP", "1")
+    counts = Simulator(backend="cpu", seed=1).run(circuit, shots=400)
+    # Bell pair on qubits (2, 0): only '000' and '101' may appear.
+    assert set(counts) <= {"000", "101"}
+    assert sum(counts.values()) == 400
+
+
 def test_select_backend_tiers(monkeypatch):
-    """CPU <=16q, MLX 17-30q, Metal 31q+ (MLX caps at 30q; Metal is the only 31q+ path)."""
+    """CPU <=16q, Metal 17q+ (post-Step-22/25 tiers); MLX is the no-Metal fallback."""
     import macquerel.simulator as sim
 
     monkeypatch.setattr(sim, "_MLX_AVAILABLE", True)
     monkeypatch.setattr(sim, "_METAL_AVAILABLE", True)
     assert sim._select_backend(16) == "cpu"
-    assert sim._select_backend(17) == "mlx"
-    assert sim._select_backend(30) == "mlx"
-    assert sim._select_backend(31) == "metal"
+    assert sim._select_backend(17) == "metal"
+    assert sim._select_backend(22) == "metal"
+    assert sim._select_backend(30) == "metal"
     assert sim._select_backend(33) == "metal"
 
 
 def test_select_backend_fallbacks(monkeypatch):
     import macquerel.simulator as sim
 
-    # No Metal: MLX still serves 17-30q. 31q+ has no working backend (MLX would
-    # crash on the int32 ceiling), so we fall back to CPU rather than route there.
+    # No Metal: MLX still serves its full 17-30q range. 31q+ has no working
+    # backend (MLX would crash on the int32 ceiling), so we fall back to CPU
+    # rather than route there.
     monkeypatch.setattr(sim, "_MLX_AVAILABLE", True)
     monkeypatch.setattr(sim, "_METAL_AVAILABLE", False)
     assert sim._select_backend(25) == "mlx"
+    assert sim._select_backend(30) == "mlx"
     assert sim._select_backend(31) == "cpu"
 
     # No MLX: Metal serves everything above the CPU tier.

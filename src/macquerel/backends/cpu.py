@@ -11,6 +11,20 @@ class CPUBackend:
     def __init__(self, seed: int | None = None) -> None:
         if seed is not None:
             np.random.seed(seed)
+        # classify() memoized by matrix bytes — the diagonal fast-path check
+        # would otherwise cost ~10us of NumPy overhead per gate application,
+        # which is a measurable regression on the raw small-n per-gate path.
+        self._classify_cache: dict[tuple, str] = {}
+
+    def _classify(self, mat: np.ndarray) -> str:
+        key = (mat.shape, mat.tobytes())
+        kind = self._classify_cache.get(key)
+        if kind is None:
+            from macquerel.gates import classify
+
+            kind = classify(mat)
+            self._classify_cache[key] = kind
+        return kind
 
     def allocate(self, n_qubits: int, dtype=np.complex64) -> np.ndarray:
         sv = np.zeros(2**n_qubits, dtype=dtype)
@@ -33,6 +47,13 @@ class CPUBackend:
         if controls:
             return self._apply_controlled(sv, matrix, targets, controls)
 
+        # Diagonal fast path (Step 26): one elementwise multiply instead of a
+        # tensordot + transpose. Required for the wide fused diagonals the
+        # compiler now emits (a 10-qubit diagonal as a dense 1024x1024 tensordot
+        # would be far slower than the gates it replaced).
+        if self._classify(matrix) == "diagonal":
+            return self._apply_diagonal(sv, matrix, targets, n, k)
+
         state = sv.reshape((2,) * n)
         gate_t = matrix.astype(sv.dtype).reshape((2,) * (2 * k))
         out = np.tensordot(gate_t, state, axes=(list(range(k, 2 * k)), targets))
@@ -43,6 +64,28 @@ class CPUBackend:
             inv_perm[old_pos] = new_pos
         out = np.transpose(out, inv_perm)
         sv[:] = out.reshape(-1)
+        return sv
+
+    def _apply_diagonal(
+        self,
+        sv: np.ndarray,
+        matrix: np.ndarray,
+        targets: list[int],
+        n: int,
+        k: int,
+    ) -> np.ndarray:
+        """Diagonal gate: broadcast in-place multiply (one read + one write).
+
+        The 2**k diagonal is reshaped so its axes sit at the target positions
+        and every other axis broadcasts — no index table over the full state.
+        """
+        diag = np.diag(matrix).astype(sv.dtype, copy=False).reshape((2,) * k)
+        # Reorder the tiny diag tensor's axes to ascending target order so it
+        # lines up with the state's axis order.
+        diag = np.transpose(diag, tuple(np.argsort(targets)))
+        target_set = set(targets)
+        shape = tuple(2 if i in target_set else 1 for i in range(n))
+        sv.reshape((2,) * n)[...] *= diag.reshape(shape)
         return sv
 
     def _apply_controlled(

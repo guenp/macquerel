@@ -43,8 +43,10 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -124,7 +126,7 @@ GENERATORS = {
 @dataclass
 class Backend:
     name: str
-    build_and_run: callable  # (ops, n) -> statevector (forced/realized)
+    build_and_run: Callable[[list[Op], int], Any] | None
     available: bool = True
     note: str = ""
 
@@ -201,7 +203,7 @@ def _make_aer():
                 qc.cp(op[3], op[1], op[2])
             else:
                 raise ValueError(f"unknown op {name}")
-        qc.save_statevector()
+        qc.save_statevector()  # ty: ignore[unresolved-attribute]
         result = sim.run(qc).result()
         return result.get_statevector()
 

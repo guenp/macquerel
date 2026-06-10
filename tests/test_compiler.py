@@ -91,6 +91,122 @@ def test_fusion_limit():
     assert total_qubits == 5
 
 
+def _cp_cascade(n: int) -> Circuit:
+    """A QFT-style controlled-phase cascade onto qubit 0 (all diagonal)."""
+    qc = Circuit(n)
+    for k in range(1, n):
+        qc.cp(k, 0, float(np.pi / 2**k))
+    return qc
+
+
+def test_diag_run_fusion_merges_wide(monkeypatch):
+    """Step 26: adjacent diagonal gates merge past the dense width-4 limit."""
+    monkeypatch.delenv("MACQUEREL_DIAG_FUSION_WIDTH", raising=False)
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    n = 8
+    qc = _cp_cascade(n)
+    fused = fuse_gates(qc)
+    gate_ops = [op for op in fused.ops if isinstance(op, Gate)]
+    # 7 CPs over 8 qubits fit in one 8-qubit diagonal (cap is 8).
+    assert len(gate_ops) == 1
+    assert gate_ops[0].kind == "diagonal"
+    assert len(gate_ops[0].targets) == n
+    assert np.allclose(_run_statevector(qc), _run_statevector(fused), atol=1e-5)
+
+
+def test_diag_run_fusion_preserves_statevector(monkeypatch):
+    """Mixed dense/diagonal circuit: the merge pass must respect barriers."""
+    monkeypatch.delenv("MACQUEREL_DIAG_FUSION_WIDTH", raising=False)
+    rng = np.random.default_rng(3)
+    n = 7
+    qc = Circuit(n)
+    for i in range(n):
+        qc.h(i)
+    for _ in range(30):
+        r = rng.random()
+        if r < 0.5:
+            qc.cp(int(rng.integers(n - 1)) + 1, 0, float(rng.uniform(0, np.pi)))
+        elif r < 0.75:
+            qc.ry(int(rng.integers(n)), float(rng.uniform(0, np.pi)))
+        else:
+            qc.rz(int(rng.integers(n)), float(rng.uniform(0, np.pi)))
+    fused = fuse_gates(qc)
+    assert np.allclose(_run_statevector(qc), _run_statevector(fused), atol=1e-4)
+
+
+def test_diag_fusion_env_disable(monkeypatch):
+    """MACQUEREL_DIAG_FUSION_WIDTH <= max_fused_qubits disables the merge pass."""
+    monkeypatch.setenv("MACQUEREL_DIAG_FUSION_WIDTH", "1")
+    fused = fuse_gates(_cp_cascade(9))
+    gate_ops = [op for op in fused.ops if isinstance(op, Gate)]
+    assert all(len(op.targets) + len(op.controls) <= 4 for op in gate_ops)
+
+
+def test_cpu_diagonal_fast_path_matches_dense():
+    """CPU diagonal path must agree with the tensordot path it bypasses."""
+    rng = np.random.default_rng(4)
+    n = 6
+    cpu = CPUBackend()
+    diag_vals = np.exp(1j * rng.uniform(0, 2 * np.pi, size=8)).astype(np.complex64)
+    mat = np.diag(diag_vals)
+    targets = [4, 1, 3]  # unsorted, non-adjacent
+    sv = cpu.allocate(n)
+    for i in range(n):
+        sv = cpu.apply_matrix(sv, g.H(), [i])
+    expected = sv.copy().reshape((2,) * n)
+    gate_t = mat.reshape((2,) * 6).astype(np.complex64)
+    out = np.tensordot(gate_t, expected, axes=([3, 4, 5], targets))
+    remaining = [i for i in range(n) if i not in targets]
+    inv = [0] * n
+    for new_pos, old_pos in enumerate(targets + remaining):
+        inv[old_pos] = new_pos
+    expected = np.transpose(out, inv).reshape(-1)
+    got = cpu.apply_matrix(sv, mat, targets)
+    assert np.allclose(expected, got, atol=1e-6)
+
+
+def test_commutation_grouping_packs_disjoint_layers(monkeypatch):
+    """Step 27: a brickwork circuit packs per qubit-neighborhood, not program order.
+
+    Naive in-order fusion lets a rotation on an unrelated qubit inflate the
+    group's qubit union and force an early flush; the commutation-aware
+    scheduler routes disjoint gates into parallel open groups.
+    """
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    n = 8
+    qc = Circuit(n)
+    for _ in range(6):  # 6 layers of rotations + aligned CX brickwork
+        for q in range(n):
+            qc.ry(q, 0.3)
+        for q in range(0, n - 1, 2):
+            qc.cx(q, q + 1)
+    fused = fuse_gates(qc, max_fused_qubits=4)
+    gate_ops = [op for op in fused.ops if isinstance(op, Gate)]
+    # Two disjoint 4-qubit neighborhoods absorb all six layers -> 2 groups.
+    assert len(gate_ops) == 2
+    assert np.allclose(_run_statevector(qc), _run_statevector(fused), atol=1e-4)
+
+
+def test_commutation_grouping_preserves_order_on_shared_qubits():
+    """Gates sharing qubits must never be reordered across groups."""
+    rng = np.random.default_rng(12)
+    for seed in range(6):
+        rng = np.random.default_rng(seed)
+        n = 7
+        qc = Circuit(n)
+        for _ in range(50):
+            r = rng.random()
+            if r < 0.4:
+                a, b = rng.choice(n, size=2, replace=False)
+                qc.cx(int(a), int(b))
+            elif r < 0.7:
+                qc.ry(int(rng.integers(n)), float(rng.uniform(0, np.pi)))
+            else:
+                qc.rz(int(rng.integers(n)), float(rng.uniform(0, np.pi)))
+        fused = fuse_gates(qc)
+        assert np.allclose(_run_statevector(qc), _run_statevector(fused), atol=1e-4), f"seed={seed}"
+
+
 def test_remap_preserves_distribution():
     """Remapped and original circuits must produce identical measurement distributions."""
     # Build a 4-qubit circuit with unequal qubit access frequency.
@@ -174,6 +290,77 @@ def test_env_override_pins_int(monkeypatch):
     assert compiler._resolve_fusion_width() == 3
 
 
+# --- Step 30: per-(backend, qubit-count) fusion-width defaults ---
+
+
+def test_per_backend_default_widths(monkeypatch):
+    """Unset env -> qubit-aware per-backend defaults; unknown backend/n -> 4."""
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    # metal: 2 through 22q, 4 above (flat 2 regressed random@24-28 by ~3x).
+    assert compiler._resolve_fusion_width("metal", 6) == 2
+    assert compiler._resolve_fusion_width("metal", 22) == 2
+    assert compiler._resolve_fusion_width("metal", 23) == 4
+    assert compiler._resolve_fusion_width("metal", 28) == 4
+    # cpu: 3 through 18q, 4 above.
+    assert compiler._resolve_fusion_width("cpu", 16) == 3
+    assert compiler._resolve_fusion_width("cpu", 18) == 3
+    assert compiler._resolve_fusion_width("cpu", 20) == 4
+    # mlx: 4 everywhere.
+    assert compiler._resolve_fusion_width("mlx", 16) == 4
+    assert compiler._resolve_fusion_width("mlx", 28) == 4
+    # Unknown backend or missing n: the generic default.
+    assert compiler._resolve_fusion_width("something-else", 10) == 4
+    assert compiler._resolve_fusion_width(None, 10) == 4
+    assert compiler._resolve_fusion_width("metal", None) == 4
+
+
+def test_env_override_beats_backend_default(monkeypatch):
+    """An explicit MACQUEREL_FUSION_WIDTH pins every backend and qubit count."""
+    monkeypatch.setenv("MACQUEREL_FUSION_WIDTH", "5")
+    assert compiler._resolve_fusion_width("metal", 6) == 5
+    assert compiler._resolve_fusion_width("cpu", 24) == 5
+
+
+def test_fuse_gates_backend_caps_group_width(monkeypatch):
+    """fuse_gates(backend='metal') must emit no fused gate wider than 2 qubits."""
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    monkeypatch.setenv("MACQUEREL_DIAG_FUSION_WIDTH", "1")  # isolate pass 1
+    rng = np.random.default_rng(3)
+    n = 6
+    circuit = Circuit(n)
+    for _ in range(40):
+        if rng.random() < 0.5:
+            a, b = rng.choice(n, size=2, replace=False)
+            circuit.cx(int(a), int(b))
+        else:
+            circuit.ry(int(rng.integers(n)), float(rng.uniform(0, 3.14)))
+    fused = fuse_gates(circuit, backend="metal")
+    widths = [len(set(op.targets + op.controls)) for op in fused.ops if isinstance(op, Gate)]
+    assert max(widths) <= 2
+    # And the narrower fusion still produces an equivalent state.
+    assert np.allclose(_run_statevector(fused), _run_statevector(circuit), atol=1e-5)
+
+
+def test_simulator_compile_uses_selected_backend_width(monkeypatch):
+    """Simulator._compile must resolve the fusion width for the backend it runs on."""
+    import macquerel.simulator as sim_mod
+
+    seen: list[tuple[str | None, int | None]] = []
+    real = compiler._resolve_fusion_width
+
+    def spy(backend=None, n_qubits=None):
+        seen.append((backend, n_qubits))
+        return real(backend, n_qubits)
+
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    monkeypatch.setattr(compiler, "_resolve_fusion_width", spy)
+    circuit = Circuit(2)
+    circuit.h(0)
+    circuit.cx(0, 1)
+    sim_mod.Simulator(backend="cpu")._compile(circuit)
+    assert seen == [("cpu", 2)]
+
+
 def test_env_auto_opts_into_autotuner(monkeypatch):
     """MACQUEREL_FUSION_WIDTH=auto routes to the autotuner."""
     monkeypatch.setenv("MACQUEREL_FUSION_WIDTH", "auto")
@@ -247,7 +434,7 @@ def test_autotune_measure_fallback_on_error(monkeypatch, tmp_path):
 
 def test_fuse_gates_uses_resolved_width(monkeypatch):
     """fuse_gates() with no width argument resolves via _resolve_fusion_width."""
-    monkeypatch.setattr(compiler, "_resolve_fusion_width", lambda: 2)
+    monkeypatch.setattr(compiler, "_resolve_fusion_width", lambda backend=None, n_qubits=None: 2)
     qc = Circuit(5)
     for i in range(5):
         qc.h(i)

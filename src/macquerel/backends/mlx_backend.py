@@ -13,12 +13,34 @@ except ImportError:
     _MLX_AVAILABLE = False
 
 
+# Step 24: kick off (asynchronous) evaluation of the state every this many
+# gate applications, but only for states of at least _ASYNC_EVAL_MIN_QUBITS.
+# P1 (defer evaluation) deliberately stopped eval-ing per gate, but with *no*
+# synchronization between observation boundaries a depth-d circuit keeps O(d)
+# full-width temporaries in the lazy graph: at 26-28q the observed peak is
+# >= ~16x the state size, which drives the machine into swap (the 28q cliff,
+# see docs/plan.md baseline). async_eval keeps the pipeline full while letting
+# MLX retire and free earlier intermediates, bounding the working set. Small
+# states keep the fully-lazy P1 behavior - their graphs are tiny and the win
+# there came precisely from not synchronizing.
+_ASYNC_EVAL_INTERVAL = 16
+_ASYNC_EVAL_MIN_QUBITS = 24
+
+
 @dataclass
 class MLXState:
-    """Statevector held as a single complex64 mx.array (P4: native complex storage)."""
+    """Statevector held as a single complex64 mx.array (P4: native complex storage).
+
+    `perm` tracks the physical axis order of the (2,)*n view (Step 23):
+    ``perm[axis] = logical qubit stored on that axis``. Dense gates leave their
+    contracted axes in front rather than paying a full transpose+copy to restore
+    canonical order after every gate; the permutation is folded in once, at
+    readback (`to_numpy` / measure / sample). ``None`` means canonical order.
+    """
 
     data: mx.array  # shape (2**n,), complex64
     n_qubits: int
+    perm: tuple[int, ...] | None = None
 
 
 def _diag_phase_kernel(data, diag, gate_idx):
@@ -62,6 +84,8 @@ class MLXBackend:
         # arithmetic into one kernel and caches the trace per input shape.
         self._diag_kernel = mx.compile(_diag_phase_kernel)
         self._perm_kernel = mx.compile(_perm_gather_kernel)
+        # Step 24: gate applications since the last async_eval kick.
+        self._applies_since_eval = 0
 
     def _arange(self, n: int) -> mx.array:
         """Cached, evaluated uint32 [0, 2**n) index vector (one per qubit count)."""
@@ -91,7 +115,36 @@ class MLXBackend:
         mx.eval(data)
         return MLXState(data=data, n_qubits=n_qubits)
 
+    @staticmethod
+    def _perm_of(sv: MLXState) -> tuple[int, ...]:
+        return sv.perm if sv.perm is not None else tuple(range(sv.n_qubits))
+
+    @staticmethod
+    def _phys(sv: MLXState, qubits: list[int]) -> list[int]:
+        """Map logical qubits to their current physical axes (Step 23)."""
+        if sv.perm is None:
+            return list(qubits)
+        pos = {q: a for a, q in enumerate(sv.perm)}
+        return [pos[q] for q in qubits]
+
+    def _canonicalize(self, sv: MLXState) -> None:
+        """Fold the deferred axis permutation into the data (one transpose).
+
+        Mutates `sv` so repeated readbacks pay the transpose once. This is the
+        only place the Step 23 permutation is materialized.
+        """
+        perm = self._perm_of(sv)
+        if perm == tuple(range(sv.n_qubits)):
+            sv.perm = None
+            return
+        view = sv.data.reshape((2,) * sv.n_qubits)
+        # New axis i must hold logical qubit i, currently on axis perm.index(i).
+        order = [perm.index(i) for i in range(sv.n_qubits)]
+        sv.data = mx.transpose(view, order).reshape(-1)
+        sv.perm = None
+
     def to_numpy(self, sv: MLXState) -> np.ndarray:
+        self._canonicalize(sv)
         mx.eval(sv.data)
         return np.array(sv.data).astype(np.complex64)
 
@@ -106,28 +159,44 @@ class MLXBackend:
         kind = self._classify(mat)
 
         if kind == "diagonal" and not controls:
-            return self._apply_diagonal(sv, mat, targets)
-        if kind == "permutation" and not controls:
-            return self._apply_permutation(sv, mat, targets)
-        return self._apply_general(sv, mat, targets, controls)
+            new = self._apply_diagonal(sv, mat, targets)
+        elif kind == "permutation" and not controls:
+            new = self._apply_permutation(sv, mat, targets)
+        else:
+            new = self._apply_general(sv, mat, targets, controls)
+        self._maybe_async_eval(new)
+        return new
 
-    def _gate_index(self, targets: list[int], n: int) -> mx.array:
-        """Pack the k target bits of every basis index into a gate-row index."""
-        k = len(targets)
+    def _maybe_async_eval(self, sv: MLXState) -> None:
+        """Step 24: periodically start evaluating the state without blocking."""
+        if sv.n_qubits < _ASYNC_EVAL_MIN_QUBITS:
+            return
+        self._applies_since_eval += 1
+        if self._applies_since_eval >= _ASYNC_EVAL_INTERVAL:
+            mx.async_eval(sv.data)
+            self._applies_since_eval = 0
+
+    def _gate_index(self, phys_targets: list[int], n: int) -> mx.array:
+        """Pack the k target bits of every basis index into a gate-row index.
+
+        `phys_targets` are *physical* axis positions (already translated through
+        the state's axis permutation, Step 23).
+        """
+        k = len(phys_targets)
         indices = self._arange(n)
         gate_idx = mx.zeros(2**n, dtype=mx.uint32)
-        for bit_pos, q in enumerate(targets):
+        for bit_pos, q in enumerate(phys_targets):
             bit = (indices >> (n - 1 - q)) & self._one
             gate_idx = gate_idx | (bit << (k - 1 - bit_pos))
         return gate_idx
 
     def _apply_diagonal(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
-        """Diagonal gate: elementwise complex phase multiply."""
+        """Diagonal gate: elementwise complex phase multiply (layout-preserving)."""
         n = sv.n_qubits
         diag_mx = mx.array(np.diag(matrix).astype(np.complex64))
-        gate_idx = self._gate_index(targets, n)
+        gate_idx = self._gate_index(self._phys(sv, targets), n)
         new_data = self._diag_kernel(sv.data, diag_mx, gate_idx)
-        return MLXState(data=new_data, n_qubits=n)
+        return MLXState(data=new_data, n_qubits=n, perm=sv.perm)
 
     def _apply_permutation(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
         """Monomial (generalized-permutation) gate: gather + per-row phase.
@@ -147,6 +216,7 @@ class MLXBackend:
         n = sv.n_qubits
         size = 2**n
         k = len(targets)
+        phys = self._phys(sv, targets)
 
         # Per-output-row source map on the (2**k) target subspace. For a monomial
         # matrix M, out[j] = M[j, i] * in[i] where i = argmax(|M[j]|) is the one
@@ -167,7 +237,7 @@ class MLXBackend:
 
         # Extract the k target bits of every output index into a gate-row index.
         out_row = mx.zeros(size, dtype=mx.uint32)
-        for j, t in enumerate(targets):
+        for j, t in enumerate(phys):
             bit = (indices >> (n - 1 - t)) & one
             out_row = out_row | (bit << (k - 1 - j))
 
@@ -176,7 +246,7 @@ class MLXBackend:
 
         # Source index = output index with its target bits rewritten to in_row.
         src = indices
-        for j, t in enumerate(targets):
+        for j, t in enumerate(phys):
             shift = n - 1 - t
             clear_mask = mx.array(((1 << n) - 1) ^ (1 << shift), dtype=mx.uint32)
             bit = (in_row >> (k - 1 - j)) & one
@@ -186,33 +256,30 @@ class MLXBackend:
         if has_phase:
             # Multiply each amplitude by its row's nonzero entry (phase gather).
             new_data = mx.array(row_phase)[out_row] * new_data
-        return MLXState(data=new_data, n_qubits=n)
+        return MLXState(data=new_data, n_qubits=n, perm=sv.perm)
 
-    def _dense_apply(
+    def _tensordot_front(
         self,
         data: mx.array,
         mat: np.ndarray,
-        targets: list[int],
+        phys_targets: list[int],
         n: int,
     ) -> mx.array:
-        """Apply a dense k-qubit matrix to `targets` over the full state.
+        """Contract a dense k-qubit matrix against the given physical axes.
 
-        Single complex64 tensordot (vs four real tensordots in the SoA layout),
-        then transpose the contracted axes back into canonical qubit order.
+        Single complex64 tensordot (vs four real tensordots in the SoA layout).
+        The result keeps tensordot's natural output order: contracted axes in
+        *front* (gate target order), remaining axes after them in their prior
+        relative order. Step 23: the transpose+copy back to canonical order
+        that used to follow every dense gate is gone — the caller records the
+        new axis permutation on the state instead, and it is materialized once
+        at readback (`_canonicalize`).
         """
-        k = len(targets)
+        k = len(phys_targets)
         mat_mx = mx.array(mat.astype(np.complex64)).reshape((2,) * (2 * k))
         state = data.reshape((2,) * n)
         input_axes = list(range(k, 2 * k))
-
-        out = mx.tensordot(mat_mx, state, axes=[input_axes, targets])
-
-        remaining = [i for i in range(n) if i not in targets]
-        dest = targets + remaining
-        inv_perm = [0] * n
-        for new_pos, old_pos in enumerate(dest):
-            inv_perm[old_pos] = new_pos
-        return mx.transpose(out, inv_perm).reshape(-1)
+        return mx.tensordot(mat_mx, state, axes=[input_axes, phys_targets])
 
     def _apply_controlled(
         self,
@@ -226,20 +293,32 @@ class MLXBackend:
         Applies the matrix to the targets across the whole state, then selects
         between the gated and original amplitudes with a control mask (all
         control bits set) via mx.where. No CPU fallback / numpy round-trip.
+
+        Unlike the uncontrolled dense path this *is* layout-preserving: the
+        gated tensor is transposed back to the state's current axis order so
+        the mx.where select lines up element-by-element with `sv.data`.
         """
         n = sv.n_qubits
-        gated = self._dense_apply(sv.data, matrix, targets, n)
+        phys = self._phys(sv, targets)
+        out = self._tensordot_front(sv.data, matrix, phys, n)
+
+        remaining = [i for i in range(n) if i not in phys]
+        dest = phys + remaining
+        inv_perm = [0] * n
+        for new_pos, old_pos in enumerate(dest):
+            inv_perm[old_pos] = new_pos
+        gated = mx.transpose(out, inv_perm).reshape(-1)
 
         indices = self._arange(n)
         one = self._one
         mask = None
-        for c in controls:
+        for c in self._phys(sv, controls):
             bit = (indices >> (n - 1 - c)) & one
             cond = bit == one
             mask = cond if mask is None else (mask & cond)  # ty: ignore[unsupported-operator]
 
         new_data = mx.where(mask, gated, sv.data)  # ty: ignore[invalid-argument-type]
-        return MLXState(data=new_data, n_qubits=n)
+        return MLXState(data=new_data, n_qubits=n, perm=sv.perm)
 
     def _apply_general(
         self,
@@ -248,15 +327,22 @@ class MLXBackend:
         targets: list[int],
         controls: list[int] | None,
     ) -> MLXState:
-        """General dense gate, kept on the GPU via mx.tensordot."""
+        """General dense gate, kept on the GPU via mx.tensordot (Step 23: the
+        contracted axes stay in front; only the axis permutation is updated)."""
         n = sv.n_qubits
         mat = matrix.astype(np.complex64)
 
         if controls:
             return self._apply_controlled(sv, mat, targets, controls)
 
-        out = self._dense_apply(sv.data, mat, targets, n)
-        return MLXState(data=out, n_qubits=n)
+        perm = self._perm_of(sv)
+        phys = self._phys(sv, targets)
+        out = self._tensordot_front(sv.data, mat, phys, n)
+        phys_set = set(phys)
+        new_perm = tuple(targets) + tuple(q for a, q in enumerate(perm) if a not in phys_set)
+        if new_perm == tuple(range(n)):
+            new_perm = None  # canonical; keep the fast no-perm path
+        return MLXState(data=out.reshape(-1), n_qubits=n, perm=new_perm)
 
     def measure(
         self,
@@ -326,6 +412,7 @@ class MLXBackend:
         batch_shots: int | str = "auto",
     ) -> Counter:
         n = sv.n_qubits
+        self._canonicalize(sv)
         mx.eval(sv.data)
         state = np.array(sv.data).reshape((2,) * n)
         probs2 = np.abs(state) ** 2
@@ -370,6 +457,7 @@ class MLXBackend:
 
     def abs2sum(self, sv: MLXState, qubits: list[int]) -> np.ndarray:
         n = sv.n_qubits
+        self._canonicalize(sv)
         mx.eval(sv.data)
         arr = np.array(sv.data)
         probs = (np.abs(arr) ** 2).reshape((2,) * n)

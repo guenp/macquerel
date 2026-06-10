@@ -401,3 +401,115 @@ across a *span* straddling the regime (MLX 20q/22q, else CPU 14q/16q), normalize
 count by its own fastest width, and picks the lowest aggregate (ties within 2% break toward
 4); on this chip it confirms 4. Full benchmark write-up:
 <https://github.com/guenp/macquerel/pull/8#issuecomment-4636543327>.
+
+---
+
+## v0.2.x — GPU backend performance (Steps 21-30)
+
+> **Status: SHIPPED (2026-06-10), branch `gpu-perf-plan`.** Goal: make the MLX and Metal
+> backends competitive with Qiskit Aer / Qulacs on runtime. Every step was A/B-benchmarked
+> with `benchmarks/run_step_bench.sh` (subprocess-isolated, min-of-3, per-step JSONs named
+> `<step>-<commit>-<backend>.json`); full data, charts, and per-step justifications in
+> `benchmarks/data/steps/README.md`. Execution order was 21 → 22 → 24 → 23 → 25 → 26 →
+> 27 → 28 (24 moved before 23 after review so the memory-cliff fix would not confound
+> 23's large-n A/B).
+
+### Step 21: Auto-select 22q+ → Metal ✅ (`7cad261`, superseded by `0806f3e`)
+
+Routing-only quick win from the baseline data (Metal beat MLX 2.7–5.1× at 24–28q while
+auto still routed there to MLX). Re-tuned at the end of the line: after Steps 22+25,
+Metal wins at **every** measured count ≥17q, so the tiers are now CPU ≤16q / Metal ≥17q,
+with MLX serving 17–30q only when `pyobjc-framework-Metal` is absent.
+
+### Step 22: Metal batched command-buffer encoding ✅ (`58cc612`) — Metal 1.30× geomean
+
+Gates are encoded into one open command buffer and committed at observation boundaries
+(`_view`) or every 256 dispatches, instead of `commit` + `waitUntilCompleted` per gate;
+`_const` matrix/index buffers are cached by content (in-flight safety rests on the
+command buffer's default retention of referenced resources — regression-tested by
+shrinking the cache cap). random@6 22.6→12.1 ms, random@20 106.8→64.2 ms; neutral at
+26–28q (bandwidth-bound).
+
+### Step 24: MLX periodic `mx.async_eval` ✅ (`bf78f05`) — random@28 1.56×
+
+P1 removed per-gate eval but left a depth-d lazy graph holding O(d) full-width
+temporaries (peak ≥ ~16× state size → swap at 28q). `async_eval(sv.data)` every 16
+gates (only ≥24 qubits) bounds the working set: random@28 40.0→25.6 s. Interval 8–64
+measured flat (±1%); every non-swapping cell unchanged.
+
+### Step 23: MLX axis-order tracking ✅ (`7bbc216`) — 1.05–1.15× on dense circuits
+
+`MLXState.perm` records the post-tensordot axis order instead of paying a full-state
+transpose+copy per dense gate; diagonal/permutation/controlled paths translate targets
+through the map; the permutation is materialized once at readback. Verified by
+mixed-kind fuzz (dense+diagonal+permutation+controlled interleaved), partial
+`abs2sum`/sampling, and readback-ordering tests. Gain bounded because `mx.tensordot`
+still permutes its *input* internally — the planned Step 29 custom kernel became
+unnecessary once Step 27 landed.
+
+### Step 25: Kind-specialized Metal kernels ✅ (`bc346fb`) — Metal 1.36× geomean, random@24–28 2.7–3.1×
+
+(a) Pipelines compiled per gate width with `K_FIXED` baked in as a preprocessor macro:
+the per-group `amp[]`/`idx[]` arrays unroll into registers (runtime-`k` indexing was
+spilling) — this is where the ~3× on fused 4q dense gates came from. (b) A monomial
+kernel applies permutation-class gates with 2^k multiplies per group instead of 4^k
+MACs (1.9× on 4q monomials at 20q; neutral ≥24q). (c) Threadgroup sweep 64/256/1024
+was flat; 256 kept.
+
+### Step 26: Diagonal-run wide fusion + CPU diagonal path ✅ (`14cdf74`) — QFT-focused
+
+Second fusion pass merges adjacent diagonal gates (including diagonal composites such
+as CX·Rz·CX from pass 1) into up-to-**8**-qubit diagonals via an O(2^k) elementwise
+product. Width sweep: 7–8 win; 10 *regresses* (materializing + classifying 1024×1024
+dense matrices outweighs the saved passes) — `MACQUEREL_DIAG_FUSION_WIDTH` overrides.
+The CPU backend gained a broadcast in-place diagonal multiply (with memoized classify;
+an unmemoized check cost ~10µs/gate on the raw path, caught by `bench_versions`).
+cpu qft@22 680→268 ms; metal qft@28 1393→1025 ms; mlx qaoa@28 1.19×.
+
+### Step 27: Commutation-aware fusion grouping ✅ (`3a742e8`) — largest single step
+
+Replaced the single greedy in-order group with a multi-open-group scheduler: each gate
+lands in or after the latest open group it shares a qubit with (the only real ordering
+constraint; disjoint-qubit gates commute), joining the first group with capacity, with
+at most 8 open groups. Brickwork circuits collapse into rolling neighborhood groups:
+mlx random@24 1314→171 ms (7.7×), random@28 23.5→2.7 s (8.5×); metal random@24
+180→99 ms; cpu random@22 1528→664 ms. GHZ unchanged (a CX chain has nothing to
+reorder). Geomeans step-over-step: mlx 1.46×, cpu 1.17×, metal 1.15×.
+
+### Step 28: Qubit remapping wired, gated OFF ❌ kept disabled (`f55fea2`)
+
+`remap_qubits_with_perm` returns the applied permutation; `statevector()` inverts it at
+readback and counts stay in caller order for free (MeasureOp labels are rewritten in
+list order). The A/B lost on every backend/circuit at 24q (metal qft 61→79 ms, random
+89→126 ms): the readback inverse transpose outweighs any stride benefit and the GPU
+kernels are stride-insensitive. Ships disabled; `MACQUEREL_REMAP=1` opts in.
+
+### Step 30: Per-backend, qubit-aware fusion-width defaults ✅ (`3a745fb`) — metal 1.30× / cpu 1.32× geomean
+
+A fusion-width re-sweep (`benchmarks/data/fusion_width.json`: widths 1–6 ×
+{QFT, random, QAOA, QV} × 16–24q, all three backends) showed the optimal
+`max_fused_qubits` became a backend property after Steps 22/25: with Metal's per-gate
+overhead mostly gone, wide fusion at small/mid n only pays host-side matrix
+composition and densifies cheap diagonal/monomial gates. Defaults are now resolved per
+(backend, qubit count) by `default_fusion_width`: **metal 2 ≤22q, cpu 3 ≤18q,
+otherwise 4; mlx 4 everywhere** — `fuse_gates` takes the target backend and the
+Simulator passes the one it selected; `MACQUEREL_FUSION_WIDTH` still pins a global
+width and `auto` still runs the autotuner. The qubit tiering is load-bearing: a *flat*
+metal width 2 won the sweep's normalized aggregate (1.58× vs width 4) but the step A/B
+exposed 2.7–3.7× regressions on random@24–28 — at 24q+ every backend is apply-bound
+and 4 still wins. Shipped A/B: metal 1.3–2.15× at 6–20q (qft@20 21→10 ms, random@20
+41→28 ms), cpu 1.4–1.8× ≤16q, large n flat at 1.00×; mlx re-measured as a no-change
+control (1.01×). Known compromise: metal random@22 0.85× (22q nets ~1.17× across
+circuits).
+
+### Net result
+
+Cumulative vs the line's baseline (geomean over ghz/qft/random/qaoa): **Metal 2.5–2.9×
+across 6–28q**; **MLX 1.9–2.6× at 22–28q** (best cell random@28 **14.7×**: 40.0 s →
+2.7 s); **CPU 1.5–2.0×** (best cell qft@22 3.6×). Versus Qiskit Aer
+(`benchmarks/data/large`): macquerel-metal wins from 20q (random 28 vs 51 ms), 5–12×
+faster at 24q+ (random@24 99 ms vs 914 ms). The release-regression harness
+(`bench_versions.py`) shows current faster than v0.2.0 on every backend at 8–12q. G3
+(28q cliff) and G4 (auto picks measured-fastest) met; G2 (Metal crossover) moved from
+≥22q to ~20q; G1 met at the system level (Metal tier), with MLX itself still behind
+Aer only on QFT at 24q+.

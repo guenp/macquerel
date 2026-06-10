@@ -18,6 +18,7 @@ if not _METAL_AVAILABLE:  # importable but no GPU device (e.g. headless CI)
 
 import macquerel.gates as g
 from macquerel.backends.cpu import CPUBackend
+from macquerel.circuit import Gate
 
 
 @pytest.fixture
@@ -93,6 +94,94 @@ def test_fuzz_differential(cpu, metal, seed):
     assert np.allclose(sv_cpu, sv_metal, atol=1e-5), (
         f"n={n} seed={seed} max diff: {np.max(np.abs(sv_cpu - sv_metal))}"
     )
+
+
+def test_fused_random_circuit_differential(cpu, metal):
+    """Random circuits through the fusion compiler must agree CPU vs Metal.
+
+    Fusion produces composed monomial matrices that are *not* involutions and
+    carry non-trivial row phases — the exact class the Step 25 monomial kernel
+    must get right (gather direction + phase application).
+    """
+    from macquerel import Circuit
+    from macquerel.compiler import fuse_gates
+
+    for seed in range(5):
+        rng = np.random.default_rng(seed)
+        n = 6
+        c = Circuit(n)
+        for _ in range(20):
+            for q in range(n):
+                gate = rng.choice(["rx", "ry", "rz"])
+                getattr(c, gate)(q, float(rng.uniform(0, 2 * np.pi)))
+            for q in range(0, n - 1, 2):
+                c.cx(q, q + 1)
+        fc = fuse_gates(c)
+        sc = cpu.allocate(n)
+        sm = metal.allocate(n)
+        for gate in fc.ops:
+            assert isinstance(gate, Gate)
+            ctrls = getattr(gate, "controls", None) or None
+            sc = cpu.apply_matrix(sc, gate.matrix, gate.targets, ctrls)
+            sm = metal.apply_matrix(sm, gate.matrix, gate.targets, ctrls)
+        ref = np.asarray(sc).ravel()
+        got = metal.to_numpy(sm).ravel()
+        assert np.allclose(ref, got, atol=1e-4), f"seed={seed} diff={np.max(np.abs(ref - got))}"
+
+
+def test_deep_circuit_crosses_flush_cap(cpu, metal):
+    """A gate run longer than _FLUSH_EVERY spans several command buffers (Step 22).
+
+    Exercises the batched-encoding path: encode > _FLUSH_EVERY dispatches so at
+    least one mid-run flush happens, and verify the final state still matches
+    the CPU oracle (ordering across command-buffer boundaries is preserved).
+    """
+    from macquerel.backends.metal_backend import _FLUSH_EVERY
+
+    rng = np.random.default_rng(7)
+    n = 5
+    ops = _random_ops(n, _FLUSH_EVERY + 40, rng)
+    sv_cpu = cpu.to_numpy(_apply_gates(cpu, cpu.allocate(n), ops))
+    sv_metal = metal.to_numpy(_apply_gates(metal, metal.allocate(n), ops))
+    assert np.allclose(sv_cpu, sv_metal, atol=1e-4), (
+        f"max diff: {np.max(np.abs(sv_cpu - sv_metal))}"
+    )
+
+
+def test_const_cache_reset_mid_encoding(cpu, metal, monkeypatch):
+    """Const buffers must survive a cache reset while dispatches are in flight.
+
+    With deferred submission (Step 22), an encoded dispatch references its
+    matrix/index MTLBuffers until the command buffer completes. Shrink the cache
+    cap so eviction resets happen repeatedly mid-encoding; correctness then
+    rests on the command buffer's own retention of referenced resources.
+    """
+    import macquerel.backends.metal_backend as mb
+
+    monkeypatch.setattr(mb, "_CONST_CACHE_MAX", 2)
+    rng = np.random.default_rng(11)
+    n = 4
+    # Distinct rotation angles -> distinct matrices -> constant cache churn.
+    ops = [(g.Rz(float(rng.uniform(0, 6.28))), [int(rng.integers(n))]) for _ in range(50)]
+    ops += [(g.Rx(float(rng.uniform(0, 6.28))), [int(rng.integers(n))]) for _ in range(50)]
+    sv_cpu = cpu.to_numpy(_apply_gates(cpu, cpu.allocate(n), ops))
+    sv_metal = metal.to_numpy(_apply_gates(metal, metal.allocate(n), ops))
+    assert np.allclose(sv_cpu, sv_metal, atol=1e-4), (
+        f"max diff: {np.max(np.abs(sv_cpu - sv_metal))}"
+    )
+
+
+def test_gates_after_measure_see_collapsed_state(metal):
+    """Host-side collapse writes must be ordered against batched GPU dispatches."""
+    backend = MetalBackend(seed=3)
+    sv = backend.allocate(2)
+    sv = backend.apply_matrix(sv, g.H(), [0])
+    (outcome,) = backend.measure(sv, [0], collapse=True)
+    # After collapse, qubit 0 is a basis state; X flips it deterministically.
+    sv = backend.apply_matrix(sv, g.X(), [0])
+    final = backend.to_numpy(sv)
+    expected_idx = (1 - outcome) << 1
+    assert np.isclose(abs(final[expected_idx]), 1.0, atol=1e-5)
 
 
 def test_bell_state(metal):

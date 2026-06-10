@@ -15,6 +15,7 @@ extra_css = ["stylesheets/extra.css"]
 nav = [
   { "Home" = "index.md" },
   { "Getting Started" = "getting-started.md" },
+  { "Backends" = "backends.md" },
   { "Reference" = [
     { "Overview" = "reference/index.md" },
     { "API" = "reference/api.md" },
