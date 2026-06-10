@@ -36,7 +36,12 @@ except Exception:  # pragma: no cover - import guard for non-Apple / no-GPU
     _METAL_AVAILABLE = False
 
 
-# Metal Shading Language source, compiled once at backend construction.
+# Metal Shading Language source, compiled per target-qubit count `k`.
+#
+# Step 25: the gate width is baked in as the K_FIXED preprocessor macro (set
+# via MTLCompileOptions when the pipeline for that k is first needed), so every
+# `for (j < K_FIXED)` loop below is unrolled at compile time and the amp/idx
+# arrays get exact sizes. Pipelines are cached per (kernel, k).
 #
 # The linear amplitude index is reconstructed from a 3D grid as
 #   i = (gid.z * gdim.y + gid.y) * gdim.x + gid.x
@@ -47,6 +52,11 @@ _KERNEL_SRC = r"""
 #include <metal_stdlib>
 using namespace metal;
 
+#ifndef K_FIXED
+#define K_FIXED 1
+#endif
+#define KDIM (1u << K_FIXED)
+
 static inline float2 cmul(float2 a, float2 b) {
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
@@ -55,41 +65,41 @@ static inline float2 cmul(float2 a, float2 b) {
 kernel void diagonal(device float2*   state [[buffer(0)]],
                      constant float2* diag  [[buffer(1)]],
                      constant uint*   tpos  [[buffer(2)]],  // target bit positions
-                     constant uint&   k     [[buffer(3)]],
                      uint3 gid  [[thread_position_in_grid]],
                      uint3 gdim [[threads_per_grid]]) {
     ulong i = ((ulong)gid.z * gdim.y + gid.y) * gdim.x + gid.x;
     uint row = 0u;
-    for (uint j = 0u; j < k; ++j) {
+    for (uint j = 0u; j < K_FIXED; ++j) {
         uint bit = (uint)((i >> tpos[j]) & 1u);
-        row |= bit << (k - 1u - j);
+        row |= bit << (K_FIXED - 1u - j);
     }
     state[i] = cmul(diag[row], state[i]);
 }
 
-// General k-qubit dense gate (also handles permutation and controlled gates).
-// One thread owns a group: the 2^k amplitudes sharing the same non-target bits.
-// It loads them, applies the 2^k x 2^k matrix, and writes them back -- disjoint
-// across groups, so the in-place update is race-free without double-buffering.
+// Expand a group id into a base index with 0 at every target bit, by inserting
+// a zero bit at each target position (ascending so higher bits shift up
+// correctly). One thread owns a group: the 2^k amplitudes sharing the same
+// non-target bits — disjoint across threads, so in-place updates are race-free.
+static inline ulong group_base(ulong g, constant uint* tpos_sorted) {
+    ulong base = g;
+    for (uint j = 0u; j < K_FIXED; ++j) {
+        ulong mask = ((ulong)1 << tpos_sorted[j]) - 1;
+        base = ((base & ~mask) << 1) | (base & mask);
+    }
+    return base;
+}
+
+// General k-qubit dense gate (also handles controlled gates).
 kernel void dense(device float2*   state       [[buffer(0)]],
                   constant float2* M           [[buffer(1)]],  // 2^k x 2^k row-major
                   constant uint*   tpos        [[buffer(2)]],  // target bits, gate order
                   constant uint*   tpos_sorted [[buffer(3)]],  // target bits, ascending
                   constant uint*   cpos        [[buffer(4)]],  // control bit positions
-                  constant uint&   k           [[buffer(5)]],
-                  constant uint&   nc          [[buffer(6)]],
+                  constant uint&   nc          [[buffer(5)]],
                   uint3 gid  [[thread_position_in_grid]],
                   uint3 gdim [[threads_per_grid]]) {
     ulong g = ((ulong)gid.z * gdim.y + gid.y) * gdim.x + gid.x;
-
-    // Expand the group id into a base index with 0 at every target bit, by
-    // inserting a zero bit at each target position (ascending so higher bits
-    // shift up correctly).
-    ulong base = g;
-    for (uint j = 0u; j < k; ++j) {
-        ulong mask = ((ulong)1 << tpos_sorted[j]) - 1;
-        base = ((base & ~mask) << 1) | (base & mask);
-    }
+    ulong base = group_base(g, tpos_sorted);
 
     // Controlled gate: the group acts only if all control bits are set. Control
     // qubits are non-target, so the bit is constant across the group.
@@ -97,24 +107,52 @@ kernel void dense(device float2*   state       [[buffer(0)]],
         if (((base >> cpos[c]) & 1u) == 0u) return;
     }
 
-    uint K = 1u << k;
-    float2 amp[16];           // k <= 4 (fused) -> 2^k <= 16
-    ulong idx[16];
-    for (uint m = 0u; m < K; ++m) {
+    float2 amp[KDIM];
+    ulong idx[KDIM];
+    for (uint m = 0u; m < KDIM; ++m) {
         ulong id = base;
-        for (uint j = 0u; j < k; ++j) {
-            uint v = (m >> (k - 1u - j)) & 1u;
+        for (uint j = 0u; j < K_FIXED; ++j) {
+            uint v = (m >> (K_FIXED - 1u - j)) & 1u;
             id |= (ulong)v << tpos[j];
         }
         idx[m] = id;
         amp[m] = state[id];
     }
-    for (uint m = 0u; m < K; ++m) {
+    for (uint m = 0u; m < KDIM; ++m) {
         float2 acc = float2(0.0, 0.0);
-        for (uint c = 0u; c < K; ++c) {
-            acc += cmul(M[m * K + c], amp[c]);
+        for (uint c = 0u; c < KDIM; ++c) {
+            acc += cmul(M[m * KDIM + c], amp[c]);
         }
         state[idx[m]] = acc;
+    }
+}
+
+// Monomial (generalized-permutation) gate: each output row of the 2^k block is
+// one phased input row, so a group needs 2^k complex multiplies instead of the
+// dense kernel's 4^k MACs. Same group ownership -> still in-place, race-free.
+kernel void monomial(device float2*   state       [[buffer(0)]],
+                     constant float2* phase       [[buffer(1)]],  // row -> phase
+                     constant uint*   mperm       [[buffer(2)]],  // row -> source row
+                     constant uint*   tpos        [[buffer(3)]],
+                     constant uint*   tpos_sorted [[buffer(4)]],
+                     uint3 gid  [[thread_position_in_grid]],
+                     uint3 gdim [[threads_per_grid]]) {
+    ulong g = ((ulong)gid.z * gdim.y + gid.y) * gdim.x + gid.x;
+    ulong base = group_base(g, tpos_sorted);
+
+    float2 amp[KDIM];
+    ulong idx[KDIM];
+    for (uint m = 0u; m < KDIM; ++m) {
+        ulong id = base;
+        for (uint j = 0u; j < K_FIXED; ++j) {
+            uint v = (m >> (K_FIXED - 1u - j)) & 1u;
+            id |= (ulong)v << tpos[j];
+        }
+        idx[m] = id;
+        amp[m] = state[id];
+    }
+    for (uint m = 0u; m < KDIM; ++m) {
+        state[idx[m]] = cmul(phase[m], amp[mperm[m]]);
     }
 }
 """
@@ -161,16 +199,14 @@ class MetalBackend:
         self._dev = Metal.MTLCreateSystemDefaultDevice()  # ty: ignore[unresolved-attribute]
         self._queue = self._dev.newCommandQueue()
 
-        lib, err = self._dev.newLibraryWithSource_options_error_(_KERNEL_SRC, None, None)
-        if lib is None:
-            raise RuntimeError(f"Metal kernel compilation failed: {err}")
-        self._pipelines = {}
-        for name in ("diagonal", "dense"):
-            fn = lib.newFunctionWithName_(name)
-            pipe, perr = self._dev.newComputePipelineStateWithFunction_error_(fn, None)
-            if pipe is None:
-                raise RuntimeError(f"Pipeline build failed for {name!r}: {perr}")
-            self._pipelines[name] = pipe
+        # Step 25: pipelines are specialized per (kernel, k) — the gate width is
+        # baked in via the K_FIXED preprocessor macro so the MSL compiler can
+        # unroll the per-row loops. Libraries are compiled lazily per k and both
+        # the libraries and pipelines are cached. Compile k=1 eagerly so a bad
+        # kernel source still fails at construction.
+        self._libs: dict[int, object] = {}
+        self._pipelines: dict[tuple[str, int], object] = {}
+        self._pipeline("dense", 1)
 
         self._classify_cache: dict[tuple, str] = {}
         # Step 22: open command buffer / encoder for batched gate encoding.
@@ -178,6 +214,27 @@ class MetalBackend:
         self._open_enc = None
         self._encoded = 0
         self._const_cache: dict[bytes, object] = {}
+
+    def _pipeline(self, name: str, k: int):
+        """Compute pipeline for kernel `name` specialized to gate width `k`."""
+        key = (name, k)
+        pipe = self._pipelines.get(key)
+        if pipe is not None:
+            return pipe
+        lib = self._libs.get(k)
+        if lib is None:
+            opts = Metal.MTLCompileOptions.new()  # ty: ignore[unresolved-attribute]
+            opts.setPreprocessorMacros_({"K_FIXED": str(k)})
+            lib, err = self._dev.newLibraryWithSource_options_error_(_KERNEL_SRC, opts, None)
+            if lib is None:
+                raise RuntimeError(f"Metal kernel compilation failed (k={k}): {err}")
+            self._libs[k] = lib
+        fn = lib.newFunctionWithName_(name)
+        pipe, perr = self._dev.newComputePipelineStateWithFunction_error_(fn, None)
+        if pipe is None:
+            raise RuntimeError(f"Pipeline build failed for {name!r} (k={k}): {perr}")
+        self._pipelines[key] = pipe
+        return pipe
 
     # ---- buffer / readback helpers ---------------------------------------
 
@@ -245,7 +302,7 @@ class MetalBackend:
         tg = min(gx, 256)
         return (gx, gy, gz), tg
 
-    def _dispatch(self, name: str, total: int, buffers, scalars):
+    def _dispatch(self, name: str, k: int, total: int, buffers, scalars=()):
         """Encode one compute pass over `total` threads into the open command
         buffer (Step 22). The pass is *not* submitted here: submission happens
         at the next `_flush()` (observation boundary or `_FLUSH_EVERY` cap), so
@@ -255,7 +312,7 @@ class MetalBackend:
         """
         (gx, gy, gz), tg = self._grid(total)
         enc = self._encoder()
-        enc.setComputePipelineState_(self._pipelines[name])
+        enc.setComputePipelineState_(self._pipeline(name, k))
         for buf, idx in buffers:
             enc.setBuffer_offset_atIndex_(buf, 0, idx)
         for val, idx in scalars:
@@ -307,20 +364,45 @@ class MetalBackend:
         mat = matrix.astype(np.complex64)
         n = sv.n_qubits
         k = len(targets)
+        kind = self._classify(mat)
         tpos = np.array([n - 1 - t for t in targets], dtype=np.uint32)
 
-        if self._classify(mat) == "diagonal" and not controls:
+        if kind == "diagonal" and not controls:
             diag = np.ascontiguousarray(np.diag(mat).astype(np.complex64))
             self._dispatch(
                 "diagonal",
+                k,
                 2**n,
                 buffers=[(sv.buf, 0), (self._const(diag), 1), (self._const(tpos), 2)],
-                scalars=[(k, 3)],
             )
             return sv
 
-        # General path: dense / permutation / controlled, one thread per group.
         tpos_sorted = np.sort(tpos).astype(np.uint32)
+
+        if kind == "permutation" and not controls:
+            # Monomial fast path (Step 25): row -> (source row, phase), exactly
+            # as in the MLX backend's _apply_permutation. 2^k multiplies per
+            # group instead of the dense kernel's 4^k MACs.
+            dim = 2**k
+            mperm = np.array(
+                [int(np.argmax(np.abs(mat[r]))) for r in range(dim)], dtype=np.uint32
+            )
+            phase = np.ascontiguousarray(mat[np.arange(dim), mperm].astype(np.complex64))
+            self._dispatch(
+                "monomial",
+                k,
+                2 ** (n - k),
+                buffers=[
+                    (sv.buf, 0),
+                    (self._const(phase), 1),
+                    (self._const(mperm), 2),
+                    (self._const(tpos), 3),
+                    (self._const(tpos_sorted), 4),
+                ],
+            )
+            return sv
+
+        # General path: dense / controlled, one thread per group.
         if controls:
             cpos = np.array([n - 1 - c for c in controls], dtype=np.uint32)
         else:
@@ -328,6 +410,7 @@ class MetalBackend:
         nc = len(controls) if controls else 0
         self._dispatch(
             "dense",
+            k,
             2 ** (n - k),
             buffers=[
                 (sv.buf, 0),
@@ -336,7 +419,7 @@ class MetalBackend:
                 (self._const(tpos_sorted), 3),
                 (self._const(cpos), 4),
             ],
-            scalars=[(k, 5), (nc, 6)],
+            scalars=[(nc, 5)],
         )
         return sv
 

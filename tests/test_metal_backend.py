@@ -95,6 +95,38 @@ def test_fuzz_differential(cpu, metal, seed):
     )
 
 
+def test_fused_random_circuit_differential(cpu, metal):
+    """Random circuits through the fusion compiler must agree CPU vs Metal.
+
+    Fusion produces composed monomial matrices that are *not* involutions and
+    carry non-trivial row phases — the exact class the Step 25 monomial kernel
+    must get right (gather direction + phase application).
+    """
+    from macquerel import Circuit
+    from macquerel.compiler import fuse_gates
+
+    for seed in range(5):
+        rng = np.random.default_rng(seed)
+        n = 6
+        c = Circuit(n)
+        for _ in range(20):
+            for q in range(n):
+                gate = rng.choice(["rx", "ry", "rz"])
+                getattr(c, gate)(q, float(rng.uniform(0, 2 * np.pi)))
+            for q in range(0, n - 1, 2):
+                c.cx(q, q + 1)
+        fc = fuse_gates(c)
+        sc = cpu.allocate(n)
+        sm = metal.allocate(n)
+        for gate in fc.ops:
+            ctrls = getattr(gate, "controls", None) or None
+            sc = cpu.apply_matrix(sc, gate.matrix, gate.targets, ctrls)
+            sm = metal.apply_matrix(sm, gate.matrix, gate.targets, ctrls)
+        ref = np.asarray(sc).ravel()
+        got = metal.to_numpy(sm).ravel()
+        assert np.allclose(ref, got, atol=1e-4), f"seed={seed} diff={np.max(np.abs(ref - got))}"
+
+
 def test_deep_circuit_crosses_flush_cap(cpu, metal):
     """A gate run longer than _FLUSH_EVERY spans several command buffers (Step 22).
 
