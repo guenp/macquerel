@@ -139,26 +139,9 @@ half the bytes of MLX's double-buffering, and MLX additionally throttles its laz
 
 ## Future optimizations
 
-Measured candidates, roughly in order of expected payoff (the v0.3 roadmap lives in
-[the implementation plan](plan.md)):
-
-- **Batched small-circuit simulation.** The small-n regime is dispatch-bound, so the
-  fix is amortization: pack hundreds of parameter-sweep circuits (VQE/QML workloads)
-  into one kernel launch. This attacks the same fixed costs described above from the
-  other side.
-- **A custom MLX dense kernel** (`mx.fast.metal_kernel`) would bypass `tensordot`'s
-  internal permutation — the dominant cost on scattered-target circuits — and close
-  most of MLX's random/QFT gap. It was deferred during the performance line (Step 29)
-  because the native Metal backend already provides those kernels; it matters only for
-  the no-PyObjC fallback path.
-- **An in-place-style diagonal path for MLX** (compiled elementwise phase multiply
-  instead of a gather table) targets the QFT gap specifically.
-- **Lowering Metal's small-n floor** — persistent command buffers across `run()`
-  calls, a pre-warmed pipeline cache, pooled buffer allocation — could push the
-  CPU/Metal crossover below 16q.
-- **Per-chip tier boundaries.** The 16q crossover is measured on an M5 Max; base
-  M-series chips have different bandwidth/latency ratios. The same measure-and-cache
-  approach used for `MACQUEREL_FUSION_WIDTH=auto` could autotune backend selection.
-- **Out-of-core states past 33q** (NVMe-backed `np.memmap`) and **multi-Mac
-  distribution over Thunderbolt** (index-bit partitioning) extend capacity rather
-  than speed; both are v0.3 candidates.
+The optimization candidates that came out of this comparison — batched
+small-circuit simulation, a custom MLX dense kernel, an in-place-style MLX diagonal
+path, lowering Metal's small-n floor, per-chip tier autotuning — are tracked in
+[the implementation plan](plan.md) under *v0.2.x+ — performance candidates*,
+alongside the v0.3 capacity work (out-of-core states past 33q, multi-Mac
+distribution over Thunderbolt).
