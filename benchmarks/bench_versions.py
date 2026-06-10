@@ -117,7 +117,15 @@ def _make_release_env(version: str, extras: list[str]) -> Path:
     if extras:
         spec = f"macquerel[{','.join(extras)}]=={version}"
     subprocess.run(
-        [str(python), "-m", "pip", "install", "--disable-pip-version-check", spec],
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-compile",
+            spec,
+        ],
         check=True,
         text=True,
     )
@@ -159,6 +167,27 @@ def _run_backend(
         if line.startswith(_RESULT_TAG):
             return json.loads(line.split(" ", 1)[1]), None
     return [], "no benchmark result emitted"
+
+
+def _warm_backend_process(
+    python: Path,
+    backend: str,
+    qubits: list[int],
+    depth: int,
+    seed: int,
+    cwd: Path | None,
+) -> None:
+    # A fresh venv's first Python subprocess can pay one-time import/bytecode/NumPy
+    # initialization costs large enough to swamp these sub-millisecond CPU cells.
+    _run_backend(
+        python=python,
+        backend=backend,
+        qubits=[min(qubits)],
+        depth=max(1, min(depth, 1)),
+        reps=1,
+        seed=seed,
+        cwd=cwd,
+    )
 
 
 def _print_report(payload: dict, threshold: float) -> int:
@@ -251,6 +280,14 @@ def main() -> int:
         payload["runs"][label] = {"results": {}, "skipped": {}}
         for backend in args.backends:
             print(f"Running {label} {backend}...", flush=True)
+            _warm_backend_process(
+                python=python,
+                backend=backend,
+                qubits=sorted(args.qubits),
+                depth=args.depth,
+                seed=args.seed,
+                cwd=cwd_by_label[label],
+            )
             rows, error = _run_backend(
                 python=python,
                 backend=backend,
