@@ -266,6 +266,91 @@ def _embed(matrix: np.ndarray, gate_qubits: list[int], full_qubits: list[int]) -
     return out.reshape(dim_full, dim_full)
 
 
+# ---------------------------------------------------------------------------
+# Step 26: diagonal-run wide fusion
+# ---------------------------------------------------------------------------
+# Diagonal x diagonal = diagonal: composition is an O(2**k) elementwise product
+# (not an O(8**k) matrix product) and *applying* a diagonal is one elementwise
+# pass over the state regardless of k. So adjacent diagonal gates can fuse far
+# wider than the dense width-4 limit. This runs as a second pass after the
+# general fusion pass — deliberately, because general fusion is what composes
+# e.g. QAOA's CX-Rz-CX into a diagonal ZZ block in the first place; the second
+# pass then merges those blocks (and QFT's CP cascades) into wide diagonals.
+# The cap bounds the dense 2**k x 2**k matrix the Gate still carries for the
+# backends. Measured sweep (QFT@22-26, all three backends): widths 7-8 win;
+# width 10 *regresses* because materializing/classifying a 1024x1024 dense
+# matrix (8 MiB memset at fuse time + an 8 MiB copy in every backend's
+# classify per apply) costs more than the saved passes. 8 (256x256, 512 KiB)
+# is the aggregate winner.
+_DIAG_FUSION_WIDTH = 8
+
+
+def _resolve_diag_fusion_width() -> int:
+    """MACQUEREL_DIAG_FUSION_WIDTH overrides; <=1 disables the pass."""
+    env = os.environ.get("MACQUEREL_DIAG_FUSION_WIDTH")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    return _DIAG_FUSION_WIDTH
+
+
+def _compose_diagonal_run(group: list[Gate]) -> Gate:
+    """Compose adjacent diagonal gates via an elementwise diagonal product."""
+    if len(group) == 1:
+        return group[0]
+    qubit_set: list[int] = sorted({q for g in group for q in g.targets})
+    k = len(qubit_set)
+    pos = {q: i for i, q in enumerate(qubit_set)}
+    idx = np.arange(2**k)
+    diag = np.ones(2**k, dtype=np.complex128)
+    for g in group:
+        kg = len(g.targets)
+        gd = np.diag(g.matrix).astype(np.complex128)
+        sub = np.zeros(2**k, dtype=np.int64)
+        for j, q in enumerate(g.targets):
+            bit = (idx >> (k - 1 - pos[q])) & 1
+            sub |= bit << (kg - 1 - j)
+        diag = diag * gd[sub]
+    matrix = np.diag(diag).astype(np.complex64)
+    name = "DiagFused(" + ",".join(g.name for g in group) + ")"
+    return Gate(name=name, matrix=matrix, targets=qubit_set, controls=[], kind="diagonal")
+
+
+def _merge_diagonal_runs(circuit: Circuit, max_width: int) -> Circuit:
+    """Merge maximal runs of adjacent diagonal gates up to `max_width` qubits.
+
+    Diagonal gates all commute with each other, but this pass does not rely on
+    that: it only merges *adjacent* diagonal gates, so any interleaved dense or
+    permutation gate (which may not commute) acts as a barrier.
+    """
+    result = Circuit(circuit.n_qubits)
+    result.ops = []
+    run: list[Gate] = []
+    run_qubits: set[int] = set()
+
+    def flush() -> None:
+        if not run:
+            return
+        result.ops.append(_compose_diagonal_run(run))
+        run.clear()
+        run_qubits.clear()
+
+    for op in circuit.ops:
+        is_diag = isinstance(op, Gate) and not op.controls and classify(op.matrix) == "diagonal"
+        if not is_diag:
+            flush()
+            result.ops.append(op)
+            continue
+        if run and len(run_qubits | set(op.targets)) > max_width:
+            flush()
+        run.append(op)
+        run_qubits.update(op.targets)
+    flush()
+    return result
+
+
 def fuse_gates(circuit: Circuit, max_fused_qubits: int | None = None) -> Circuit:
     """Greedy gate fusion pass. Returns a new Circuit with fused gates.
 
@@ -331,6 +416,12 @@ def fuse_gates(circuit: Circuit, max_fused_qubits: int | None = None) -> Circuit
         current_qubits.update(op_qubits)
 
     flush()
+
+    # Step 26: second pass — merge adjacent diagonal gates (including diagonal
+    # composites produced above, e.g. CX·Rz·CX -> ZZ block) into wide diagonals.
+    diag_width = _resolve_diag_fusion_width()
+    if diag_width > max_fused_qubits:
+        result = _merge_diagonal_runs(result, diag_width)
     return result
 
 
