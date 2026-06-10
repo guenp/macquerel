@@ -165,6 +165,50 @@ def test_cpu_diagonal_fast_path_matches_dense():
     assert np.allclose(expected, got, atol=1e-6)
 
 
+def test_commutation_grouping_packs_disjoint_layers(monkeypatch):
+    """Step 27: a brickwork circuit packs per qubit-neighborhood, not program order.
+
+    Naive in-order fusion lets a rotation on an unrelated qubit inflate the
+    group's qubit union and force an early flush; the commutation-aware
+    scheduler routes disjoint gates into parallel open groups.
+    """
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    n = 8
+    qc = Circuit(n)
+    for _ in range(6):  # 6 layers of rotations + aligned CX brickwork
+        for q in range(n):
+            qc.ry(q, 0.3)
+        for q in range(0, n - 1, 2):
+            qc.cx(q, q + 1)
+    fused = fuse_gates(qc, max_fused_qubits=4)
+    gate_ops = [op for op in fused.ops if isinstance(op, Gate)]
+    # Two disjoint 4-qubit neighborhoods absorb all six layers -> 2 groups.
+    assert len(gate_ops) == 2
+    assert np.allclose(_run_statevector(qc), _run_statevector(fused), atol=1e-4)
+
+
+def test_commutation_grouping_preserves_order_on_shared_qubits():
+    """Gates sharing qubits must never be reordered across groups."""
+    rng = np.random.default_rng(12)
+    for seed in range(6):
+        rng = np.random.default_rng(seed)
+        n = 7
+        qc = Circuit(n)
+        for _ in range(50):
+            r = rng.random()
+            if r < 0.4:
+                a, b = rng.choice(n, size=2, replace=False)
+                qc.cx(int(a), int(b))
+            elif r < 0.7:
+                qc.ry(int(rng.integers(n)), float(rng.uniform(0, np.pi)))
+            else:
+                qc.rz(int(rng.integers(n)), float(rng.uniform(0, np.pi)))
+        fused = fuse_gates(qc)
+        assert np.allclose(_run_statevector(qc), _run_statevector(fused), atol=1e-4), (
+            f"seed={seed}"
+        )
+
+
 def test_remap_preserves_distribution():
     """Remapped and original circuits must produce identical measurement distributions."""
     # Build a 4-qubit circuit with unequal qubit access frequency.

@@ -388,34 +388,55 @@ def fuse_gates(circuit: Circuit, max_fused_qubits: int | None = None) -> Circuit
     result = Circuit(circuit.n_qubits)
     result.ops = []
 
-    current_group: list[Gate] = []
-    current_qubits: set[int] = set()
+    # Step 27: commutation-aware grouping. Gates on disjoint qubit sets
+    # commute, so instead of one greedy in-order group (where a gate on an
+    # unrelated qubit inflates the union and forces an early flush), keep
+    # several open groups and route each gate to the best one:
+    #   - a gate must land in, or after, the *latest* open group it shares a
+    #     qubit with (that is the only real ordering constraint);
+    #   - within that freedom, join the first group with capacity;
+    #   - otherwise open a new group.
+    # Groups are emitted in opening order, so all shared-qubit ordering is
+    # preserved; everything that gets reordered across groups is disjoint.
+    open_groups: list[tuple[list[Gate], set[int]]] = []
+    _MAX_OPEN_GROUPS = 8  # bounds the per-gate scan; oldest is flushed beyond this
 
-    def flush() -> None:
-        if not current_group:
-            return
-        fused = _compose_gates(current_group)
-        result.ops.append(fused)
-        current_group.clear()
-        current_qubits.clear()
+    def flush_all() -> None:
+        for gates, _ in open_groups:
+            result.ops.append(_compose_gates(gates))
+        open_groups.clear()
 
     for op in circuit.ops:
         if isinstance(op, MeasureOp):
-            flush()
+            flush_all()
             result.ops.append(op)
             continue
 
         assert isinstance(op, Gate)
         op_qubits = set(op.targets + op.controls)
-        merged_qubits = current_qubits | op_qubits
 
-        if current_group and len(merged_qubits) > max_fused_qubits:
-            flush()
+        # Latest open group sharing a qubit with this gate (ordering barrier).
+        barrier = -1
+        for i in range(len(open_groups) - 1, -1, -1):
+            if open_groups[i][1] & op_qubits:
+                barrier = i
+                break
 
-        current_group.append(op)
-        current_qubits.update(op_qubits)
+        placed = False
+        for i in range(max(barrier, 0), len(open_groups)):
+            gates, qubits = open_groups[i]
+            if len(qubits | op_qubits) <= max_fused_qubits:
+                gates.append(op)
+                qubits.update(op_qubits)
+                placed = True
+                break
+        if not placed:
+            open_groups.append(([op], set(op_qubits)))
+            if len(open_groups) > _MAX_OPEN_GROUPS:
+                gates, _ = open_groups.pop(0)
+                result.ops.append(_compose_gates(gates))
 
-    flush()
+    flush_all()
 
     # Step 26: second pass — merge adjacent diagonal gates (including diagonal
     # composites produced above, e.g. CX·Rz·CX -> ZZ block) into wide diagonals.
