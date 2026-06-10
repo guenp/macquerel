@@ -22,25 +22,26 @@ except ImportError:  # pragma: no cover - module always importable; guard anyway
     _METAL_AVAILABLE = False
 
 
-# Measured tier boundaries (benchmarks/data/large, 2026-06, M5 Max):
+# Measured tier boundaries (benchmarks/data/steps, 2026-06, M5 Max, after the
+# Step 21-27 performance line):
 #   - CPU wins through ~16q: the state is only a few MB, so per-kernel GPU
 #     dispatch latency dominates the compute.
-#   - MLX wins 17-21q.
-#   - Metal wins from 22q up (2.7-5x over MLX at 24-28q): its in-place
-#     single-buffer updates avoid MLX's double-buffering + lazy-graph
-#     temporaries, which thrash unified memory as the state grows. It is also
-#     the only backend past 30q -- MLX's int32 ShapeElem rejects >=2**31
+#   - Metal wins everywhere above that. Before Step 22 it paid a per-gate
+#     commit + waitUntilCompleted that handed 17-21q to MLX; with batched
+#     command-buffer encoding (Step 22) plus specialized kernels (Step 25)
+#     that penalty is gone and Metal beats MLX at every measured count >=17
+#     (e.g. 20q qft 21ms vs 33ms, 28q random 1.27s vs 2.75s). It is also the
+#     only backend past 30q -- MLX's int32 ShapeElem rejects >=2**31
 #     amplitudes (Gate 0, docs/plan_completed.md).
+#   - MLX serves 17-30q only as the fallback when the Metal backend (pyobjc)
+#     is not installed.
 _CPU_MAX_QUBITS = 16
-_METAL_MIN_QUBITS = 22
 _MLX_MAX_QUBITS = 30
 
 
 def _select_backend(n_qubits: int) -> str:
     if n_qubits <= _CPU_MAX_QUBITS:
         return "cpu"
-    if _MLX_AVAILABLE and n_qubits < _METAL_MIN_QUBITS:
-        return "mlx"
     if _METAL_AVAILABLE:
         return "metal"
     if _MLX_AVAILABLE and n_qubits <= _MLX_MAX_QUBITS:

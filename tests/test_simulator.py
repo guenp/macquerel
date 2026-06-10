@@ -148,14 +148,13 @@ def test_remap_env_counts_match(monkeypatch):
 
 
 def test_select_backend_tiers(monkeypatch):
-    """CPU <=16q, MLX 17-21q, Metal 22q+ (measured tiers; MLX caps at 30q)."""
+    """CPU <=16q, Metal 17q+ (post-Step-22/25 tiers); MLX is the no-Metal fallback."""
     import macquerel.simulator as sim
 
     monkeypatch.setattr(sim, "_MLX_AVAILABLE", True)
     monkeypatch.setattr(sim, "_METAL_AVAILABLE", True)
     assert sim._select_backend(16) == "cpu"
-    assert sim._select_backend(17) == "mlx"
-    assert sim._select_backend(21) == "mlx"
+    assert sim._select_backend(17) == "metal"
     assert sim._select_backend(22) == "metal"
     assert sim._select_backend(30) == "metal"
     assert sim._select_backend(33) == "metal"
