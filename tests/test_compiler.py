@@ -290,6 +290,77 @@ def test_env_override_pins_int(monkeypatch):
     assert compiler._resolve_fusion_width() == 3
 
 
+# --- Step 30: per-(backend, qubit-count) fusion-width defaults ---
+
+
+def test_per_backend_default_widths(monkeypatch):
+    """Unset env -> qubit-aware per-backend defaults; unknown backend/n -> 4."""
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    # metal: 2 through 22q, 4 above (flat 2 regressed random@24-28 by ~3x).
+    assert compiler._resolve_fusion_width("metal", 6) == 2
+    assert compiler._resolve_fusion_width("metal", 22) == 2
+    assert compiler._resolve_fusion_width("metal", 23) == 4
+    assert compiler._resolve_fusion_width("metal", 28) == 4
+    # cpu: 3 through 18q, 4 above.
+    assert compiler._resolve_fusion_width("cpu", 16) == 3
+    assert compiler._resolve_fusion_width("cpu", 18) == 3
+    assert compiler._resolve_fusion_width("cpu", 20) == 4
+    # mlx: 4 everywhere.
+    assert compiler._resolve_fusion_width("mlx", 16) == 4
+    assert compiler._resolve_fusion_width("mlx", 28) == 4
+    # Unknown backend or missing n: the generic default.
+    assert compiler._resolve_fusion_width("something-else", 10) == 4
+    assert compiler._resolve_fusion_width(None, 10) == 4
+    assert compiler._resolve_fusion_width("metal", None) == 4
+
+
+def test_env_override_beats_backend_default(monkeypatch):
+    """An explicit MACQUEREL_FUSION_WIDTH pins every backend and qubit count."""
+    monkeypatch.setenv("MACQUEREL_FUSION_WIDTH", "5")
+    assert compiler._resolve_fusion_width("metal", 6) == 5
+    assert compiler._resolve_fusion_width("cpu", 24) == 5
+
+
+def test_fuse_gates_backend_caps_group_width(monkeypatch):
+    """fuse_gates(backend='metal') must emit no fused gate wider than 2 qubits."""
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    monkeypatch.setenv("MACQUEREL_DIAG_FUSION_WIDTH", "1")  # isolate pass 1
+    rng = np.random.default_rng(3)
+    n = 6
+    circuit = Circuit(n)
+    for _ in range(40):
+        if rng.random() < 0.5:
+            a, b = rng.choice(n, size=2, replace=False)
+            circuit.cx(int(a), int(b))
+        else:
+            circuit.ry(int(rng.integers(n)), float(rng.uniform(0, 3.14)))
+    fused = fuse_gates(circuit, backend="metal")
+    widths = [len(set(op.targets + op.controls)) for op in fused.ops if isinstance(op, Gate)]
+    assert max(widths) <= 2
+    # And the narrower fusion still produces an equivalent state.
+    assert np.allclose(_run_statevector(fused), _run_statevector(circuit), atol=1e-5)
+
+
+def test_simulator_compile_uses_selected_backend_width(monkeypatch):
+    """Simulator._compile must resolve the fusion width for the backend it runs on."""
+    import macquerel.simulator as sim_mod
+
+    seen: list[tuple[str | None, int | None]] = []
+    real = compiler._resolve_fusion_width
+
+    def spy(backend=None, n_qubits=None):
+        seen.append((backend, n_qubits))
+        return real(backend, n_qubits)
+
+    monkeypatch.delenv("MACQUEREL_FUSION_WIDTH", raising=False)
+    monkeypatch.setattr(compiler, "_resolve_fusion_width", spy)
+    circuit = Circuit(2)
+    circuit.h(0)
+    circuit.cx(0, 1)
+    sim_mod.Simulator(backend="cpu")._compile(circuit)
+    assert seen == [("cpu", 2)]
+
+
 def test_env_auto_opts_into_autotuner(monkeypatch):
     """MACQUEREL_FUSION_WIDTH=auto routes to the autotuner."""
     monkeypatch.setenv("MACQUEREL_FUSION_WIDTH", "auto")
@@ -363,7 +434,7 @@ def test_autotune_measure_fallback_on_error(monkeypatch, tmp_path):
 
 def test_fuse_gates_uses_resolved_width(monkeypatch):
     """fuse_gates() with no width argument resolves via _resolve_fusion_width."""
-    monkeypatch.setattr(compiler, "_resolve_fusion_width", lambda: 2)
+    monkeypatch.setattr(compiler, "_resolve_fusion_width", lambda backend=None, n_qubits=None: 2)
     qc = Circuit(5)
     for i in range(5):
         qc.h(i)

@@ -82,11 +82,15 @@ class Simulator:
         self._np_dtype = np.complex64 if dtype == "complex64" else np.complex128
         self._backend = None if backend == "auto" else _make_backend(backend, dtype, seed)
 
+    def _backend_name_for(self, n_qubits: int) -> str:
+        if self.backend_name != "auto":
+            return self.backend_name
+        return _select_backend(n_qubits)
+
     def _get_backend(self, n_qubits: int):
         if self._backend is not None:
             return self._backend
-        name = _select_backend(n_qubits)
-        return _make_backend(name, self.dtype, self._seed)
+        return _make_backend(self._backend_name_for(n_qubits), self.dtype, self._seed)
 
     def statevector(self, circuit: Circuit) -> np.ndarray:
         backend = self._get_backend(circuit.n_qubits)
@@ -112,8 +116,11 @@ class Simulator:
         order, and `sample()` keys output bits by that order — but `statevector`
         readback must invert the permutation (see statevector()). Disabled by
         default pending the Step 28 A/B; enable with MACQUEREL_REMAP=1.
+
+        The fusion width defaults per backend (Step 30), so fusion needs to
+        know which backend this circuit will run on.
         """
-        fused = fuse_gates(circuit)
+        fused = fuse_gates(circuit, backend=self._backend_name_for(circuit.n_qubits))
         if os.environ.get("MACQUEREL_REMAP") != "1":
             return fused, None
         remapped, perm = remap_qubits_with_perm(fused)

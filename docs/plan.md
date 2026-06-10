@@ -31,6 +31,21 @@ lost on every backend (readback inverse transpose outweighs any stride benefit; 
 with `MACQUEREL_REMAP=1`). **Step 29** (custom MLX dense kernel) was not needed — Step
 27 closed the gap it targeted.
 
+### Step 30 — per-backend, qubit-aware fusion-width defaults
+
+A post-line fusion-width re-sweep (`benchmarks/data/fusion_width.json`: widths 1–6 ×
+{QFT, random, QAOA, QV} × 16–24q, all three backends) showed the optimal
+`max_fused_qubits` is now a **backend** property as well as a qubit-count one: Steps
+22/25 removed most of Metal's per-gate overhead — the thing fusion amortizes — so
+narrow fusion wins on Metal up to ~22q (1.3–2× vs the old global default of 4), while
+at 24q+ every backend is apply-bound and 4 still wins (a *flat* per-backend width 2
+regressed metal random@24–28 by 2.7–3.7× in the step A/B — the default must be
+qubit-aware). Defaults: **metal 2 ≤22q, cpu 3 ≤18q, otherwise 4; mlx 4 everywhere**.
+`fuse_gates` now takes the target backend and resolves the default from
+`default_fusion_width(backend, n_qubits)`; `MACQUEREL_FUSION_WIDTH` still pins a
+single global width, and `auto` still runs the per-chip autotuner. A/B per the usual
+protocol; results in [`benchmarks/data/steps/`](../benchmarks/data/steps/README.md).
+
 ---
 
 ## v0.3
