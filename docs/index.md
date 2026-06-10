@@ -31,16 +31,16 @@ print(counts)  # Counter({'00': ~500, '11': ~500})
 | Backend | Range | Notes |
 |---|---|---|
 | CPU (NumPy) | ≤16q | Reference implementation |
-| MLX | 17–30q | Apple Silicon GPU |
-| Metal | 31–33q | PyObjC driver, 64-bit indexing, in-place |
+| Metal | 17–33q | PyObjC kernels, 64-bit indexing, in-place |
+| MLX | 17–30q | Apple Silicon GPU; fallback when Metal is unavailable |
 
 `Simulator()` selects automatically by qubit count; pass `backend="cpu" / "mlx" / "metal"`
 to force one.
 
-![CPU vs MLX vs Metal circuit time across qubit counts](assets/benchmark-3.png)
+![CPU vs MLX vs Metal circuit time across qubit counts](assets/backend_runtimes.png)
 
-*Circuit time (depth-30 random circuit, log scale) on an Apple M5 Max. The shaded
-region past 30 qubits is reachable only by the Metal backend.*
+*Circuit time by backend (log scale) on an Apple M5 Max. Past 30 qubits only the
+Metal backend can allocate the state.*
 
 Each backend wins a different regime:
 
@@ -48,13 +48,16 @@ Each backend wins a different regime:
   vector is only a few MB and per-gate GPU dispatch latency would dominate. Time and
   memory become impractical beyond ~24q. *Pro:* runs anywhere, no GPU. *Con:* doesn't
   scale.
-- **MLX** — Apple Silicon GPU via a fused lazy graph. Wins **17–30q**, up to **~5.8×
-  faster than CPU** at 22q. *Pro:* excellent mid-range throughput with little code.
-  *Cons:* double-buffers every gate (≈2× memory), and its `int32` indexing hard-caps
-  it at **30 qubits** (2³¹ amplitudes).
 - **Metal** — custom PyObjC kernels with 64-bit indexing and genuine in-place updates.
-  The **only** backend past 30q, reaching **31–33q** (16/32/64 GiB states). At
-  overlapping sizes it also pulls ahead of MLX from ~22q up — **~13× faster at 30q** —
-  and scales cleanly at ~2× per added qubit (bandwidth-bound ideal). *Pro:* capacity and
-  large-n speed. *Con:* synchronises per gate, so below ~20q it's slower than both CPU
-  and MLX — which is why auto-select still routes small circuits elsewhere.
+  The fastest backend **everywhere ≥17q** (batched command buffers and specialized
+  kernels removed the per-gate sync that used to hold it back at mid sizes), and the
+  **only** one past 30q, reaching **31–33q** (16/32/64 GiB states) at ~2× per added
+  qubit — the bandwidth-bound ideal. At 24q it beats CPU by up to **28×**.
+- **MLX** — Apple Silicon GPU via a fused lazy graph. The fallback for **17–30q**
+  when PyObjC-Metal isn't installed: far ahead of CPU (random circuit @24q **17×**),
+  within 1.0–2× of Metal on nearest-neighbor circuits like QAOA, further behind on
+  diagonal-heavy ones like QFT. *Cons:* double-buffers every gate (≈2× memory), and
+  its `int32` indexing hard-caps it at **30 qubits** (2³¹ amplitudes).
+
+See [Backends](backends.md) for the measurements behind these tiers, why the GPU
+loses below 16q, how circuit structure moves the MLX/Metal gap, and tuning tips.
