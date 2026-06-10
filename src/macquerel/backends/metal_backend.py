@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from typing import Any, cast
 
 import numpy as np
 
@@ -229,6 +230,7 @@ class MetalBackend:
             if lib is None:
                 raise RuntimeError(f"Metal kernel compilation failed (k={k}): {err}")
             self._libs[k] = lib
+        lib = cast(Any, lib)
         fn = lib.newFunctionWithName_(name)
         pipe, perr = self._dev.newComputePipelineStateWithFunction_error_(fn, None)
         if pipe is None:
@@ -248,6 +250,7 @@ class MetalBackend:
         """
         if self._open_cb is None:
             return
+        assert self._open_enc is not None
         self._open_enc.endEncoding()
         self._open_cb.commit()
         self._open_cb.waitUntilCompleted()
@@ -384,9 +387,7 @@ class MetalBackend:
             # as in the MLX backend's _apply_permutation. 2^k multiplies per
             # group instead of the dense kernel's 4^k MACs.
             dim = 2**k
-            mperm = np.array(
-                [int(np.argmax(np.abs(mat[r]))) for r in range(dim)], dtype=np.uint32
-            )
+            mperm = np.array([int(np.argmax(np.abs(mat[r]))) for r in range(dim)], dtype=np.uint32)
             phase = np.ascontiguousarray(mat[np.arange(dim), mperm].astype(np.complex64))
             self._dispatch(
                 "monomial",

@@ -101,7 +101,7 @@ def benchmark(qubit_counts: list[int], circuits: list[str], backends: dict, reps
                     secs = min(_time_fuse_and_apply(backend, circuit, w, n) for _ in range(reps))
                     row[w] = round(secs * 1e3, 3)
                 results[bname][cname][str(n)] = row
-                best_w = min(row, key=row.get)
+                best_w = min(row, key=lambda w: row[w])
                 cells = "  ".join(f"{row[w]:7.2f}" for w in WIDTHS)
                 print(f"    {n:<3d} {cells}   w{best_w}")
     return results
@@ -125,7 +125,7 @@ def _aggregate_optima(results: dict) -> None:
         if not cells:
             continue
         norm = {w: round(agg[w] / cells, 3) for w in WIDTHS}
-        winner = min(norm, key=norm.get)
+        winner = min(norm, key=lambda w: norm[w])
         print(f"  {bname:6s}: {norm}  -> aggregate winner = w{winner}")
 
 

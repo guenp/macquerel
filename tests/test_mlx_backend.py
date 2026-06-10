@@ -8,6 +8,7 @@ mlx = pytest.importorskip("mlx.core")
 import macquerel.gates as g
 from macquerel.backends.cpu import CPUBackend
 from macquerel.backends.mlx_backend import MLXBackend
+from macquerel.circuit import Gate
 
 
 @pytest.fixture
@@ -152,6 +153,7 @@ def test_fused_random_circuit_differential(cpu, mlx_backend):
         sc = cpu.allocate(n)
         sm = mlx_backend.allocate(n)
         for gate in fc.ops:
+            assert isinstance(gate, Gate)
             ctrls = getattr(gate, "controls", None) or None
             sc = cpu.apply_matrix(sc, gate.matrix, gate.targets, ctrls)
             sm = mlx_backend.apply_matrix(sm, gate.matrix, gate.targets, ctrls)

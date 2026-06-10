@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import os
 from collections import Counter
 
 import numpy as np
-
-import os
 
 from macquerel.circuit import Circuit, Gate, MeasureOp
 from macquerel.compiler import fuse_gates, remap_qubits_with_perm

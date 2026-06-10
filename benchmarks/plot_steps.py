@@ -147,9 +147,7 @@ def make_speedup_plot(steps, timeline, baseline, commits, out_path):
                 )
     ax1.axhline(1.0, color="gray", linewidth=0.8, linestyle="--")
     ax1.set_xticks(xs)
-    ax1.set_xticklabels(
-        [f"{s}\n({commits.get(s, '?')})" for s in plot_steps_], fontsize=8
-    )
+    ax1.set_xticklabels([f"{s}\n({commits.get(s, '?')})" for s in plot_steps_], fontsize=8)
     ax1.set_ylabel("cumulative speedup vs baseline (geomean, higher = better)")
     ax1.set_title("Speedup vs baseline after each step")
     ax1.legend(fontsize=8)
@@ -165,9 +163,7 @@ def make_speedup_plot(steps, timeline, baseline, commits, out_path):
             continue
         xs2, ys2 = [], []
         for q in qubit_counts:
-            ratios = [
-                base[k] / cur[k] for k in cur if k[1] == q and k in base
-            ]
+            ratios = [base[k] / cur[k] for k in cur if k[1] == q and k in base]
             gm = geomean(ratios)
             if gm:
                 xs2.append(q)

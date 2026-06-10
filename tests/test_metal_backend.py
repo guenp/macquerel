@@ -18,6 +18,7 @@ if not _METAL_AVAILABLE:  # importable but no GPU device (e.g. headless CI)
 
 import macquerel.gates as g
 from macquerel.backends.cpu import CPUBackend
+from macquerel.circuit import Gate
 
 
 @pytest.fixture
@@ -119,6 +120,7 @@ def test_fused_random_circuit_differential(cpu, metal):
         sc = cpu.allocate(n)
         sm = metal.allocate(n)
         for gate in fc.ops:
+            assert isinstance(gate, Gate)
             ctrls = getattr(gate, "controls", None) or None
             sc = cpu.apply_matrix(sc, gate.matrix, gate.targets, ctrls)
             sm = metal.apply_matrix(sm, gate.matrix, gate.targets, ctrls)

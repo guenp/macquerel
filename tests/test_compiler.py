@@ -204,9 +204,7 @@ def test_commutation_grouping_preserves_order_on_shared_qubits():
             else:
                 qc.rz(int(rng.integers(n)), float(rng.uniform(0, np.pi)))
         fused = fuse_gates(qc)
-        assert np.allclose(_run_statevector(qc), _run_statevector(fused), atol=1e-4), (
-            f"seed={seed}"
-        )
+        assert np.allclose(_run_statevector(qc), _run_statevector(fused), atol=1e-4), f"seed={seed}"
 
 
 def test_remap_preserves_distribution():
