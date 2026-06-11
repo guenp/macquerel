@@ -40,6 +40,20 @@ from macquerel.simulator import _make_backend, _select_backend
 # ceilings land here. CPU has no hard cap, only patience and RAM.
 _BACKEND_MAX_DM_QUBITS = {"mlx": 15, "metal": 16}
 
+# Step 40: control-free gates apply as one kron(U, conj(U)) superoperator
+# over their paired ket+bra axes — one pass over the 4**n state instead of
+# two (U on the ket axes, conj(U) on the bra axes) — when the *doubled* gate
+# stays inside each backend's fast envelope. The eligible width depends on
+# the gate kind, because kron preserves it: a diagonal's superoperator is
+# still diagonal (broadcast multiply, width-insensitive; capped only by the
+# 4**k x 4**k matrix the apply_matrix interface materializes), a monomial's
+# stays monomial (gather; the MLX kernel caps at doubled width 6), and dense
+# superoperators of doubled width 6 spill GPU registers (measured 5x slower
+# on random circuits) — so dense caps at 2. Fusion width is left untouched:
+# capping it at the superop width lost more to extra passes than single-pass
+# saved (both variants measured; see plan_completed).
+_SUPEROP_MAX_QUBITS_BY_KIND = {"diagonal": 4, "permutation": 3, "dense": 2}
+
 
 class DensityMatrixSimulator:
     """Noisy circuit simulation via the vectorized density matrix.
@@ -74,6 +88,9 @@ class DensityMatrixSimulator:
         # Metal buffer pool and pipeline caches stay warm. Sampling randomness
         # lives in self._rng, not the backend, so reuse is seed-safe here.
         self._backends: dict[str, object] = {}
+        # Step 40: kron(U, conj(U)) memoized by gate-matrix bytes; None marks
+        # gates too wide for their kind's single-pass envelope.
+        self._superop_cache: dict[tuple, np.ndarray | None] = {}
 
     # -- public API ----------------------------------------------------------
 
@@ -224,7 +241,19 @@ class DensityMatrixSimulator:
         state = backend.allocate(2 * n, self._np_dtype)  # vec(|0..0><0..0|)
         for op in fused.ops:
             if isinstance(op, Gate):
-                # rho -> U rho U^dagger: U on ket axes, conj(U) on bra axes.
+                sup = None if op.controls else self._gate_superoperator(op.matrix)
+                if sup is not None:
+                    # Step 40: rho -> U rho U^dagger as one kron(U, conj(U))
+                    # pass over the paired ket+bra axes (the unitary special
+                    # case of the channel superoperator below).
+                    state = backend.apply_matrix(
+                        state, sup, op.targets + [n + t for t in op.targets], None
+                    )
+                    continue
+                # Controlled / wide gates: U on ket axes, conj(U) on bra axes.
+                # (A controlled-U's ket(x)bra product is not itself a single
+                # controlled gate — its control projectors cross-multiply — so
+                # controls keep the two-pass path.)
                 state = backend.apply_matrix(state, op.matrix, op.targets, op.controls or None)
                 state = backend.apply_matrix(
                     state,
@@ -240,6 +269,26 @@ class DensityMatrixSimulator:
             elif isinstance(op, MeasureOp) and on_measure is not None:
                 on_measure(backend, state, op.qubits)
         return backend, state
+
+    def _gate_superoperator(self, matrix: np.ndarray) -> np.ndarray | None:
+        """Memoized ``kron(U, conj(U))`` for the Step 40 single-pass apply.
+
+        Returns ``None`` when the gate is too wide for its kind's fast
+        envelope (see ``_SUPEROP_MAX_QUBITS_BY_KIND``) and must take the
+        two-pass path.
+        """
+        from macquerel.gates import classify
+
+        key = (matrix.shape[0], matrix.tobytes())
+        if key in self._superop_cache:
+            return self._superop_cache[key]
+        k = int(np.log2(matrix.shape[0]))
+        sup = None
+        if k <= _SUPEROP_MAX_QUBITS_BY_KIND[classify(matrix)]:
+            m = matrix.astype(np.complex64)
+            sup = np.kron(m, m.conj())
+        self._superop_cache[key] = sup
+        return sup
 
     @staticmethod
     def _host_view(backend, state) -> np.ndarray:
