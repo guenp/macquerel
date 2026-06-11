@@ -26,6 +26,13 @@ Metal from 17q up, MLX only as the 17–30q fallback when the Metal backend isn'
 installed. These boundaries are measured, not guessed — the sections below show the
 data behind them.
 
+One hardware note up front: MLX and Metal are two software paths to the **same single
+GPU** — Apple Silicon has exactly one, integrated on-die (40 cores on this M5 Max),
+and no simulation here ever spans more than that one device. What changes with qubit
+count is how *full* it gets, which the memory benchmark now measures per cell — see
+the GPU-utilization panel of the memory chart and the explanation in
+[How it works → backends](how-it-works/backends.md#how-many-gpus-one-the-question-is-how-full-it-gets).
+
 ## Who wins where
 
 ![Backend runtime by circuit and qubit count](assets/backend_runtimes.png)
@@ -61,6 +68,10 @@ enough to pay for the GPU's fixed costs:
   removing any.
 - **The work is too small to parallelize.** A 6q state is 512 bytes. The GPU's
   thousands of threads cannot be fed; the CPU does the whole gate inside L1 cache.
+  The memory benchmark's per-cell GPU sampling shows this directly: GPU-backend
+  cells stay at the idle baseline (≤20% device-wide busy) through ~21 qubits, and
+  only pin the single GPU at 100% from 24q (MLX) / 29q (Metal) — see
+  [How it works → backends](how-it-works/backends.md#how-many-gpus-one-the-question-is-how-full-it-gets).
 
 The penalty is a *fixed* cost, so two things follow. First, it is largest on shallow
 circuits and amortizes with depth: GHZ@6q (7 gates) pays 2× over CPU, while the
@@ -125,7 +136,8 @@ half the bytes of MLX's double-buffering, and MLX additionally throttles its laz
    MLX evaluates its lazy graph). Build the full circuit, then observe once.
 4. **Mind the memory budget.** A state is 2ⁿ × 8 bytes (complex64): 8 GiB at 30q,
    32 GiB at 32q, 64 GiB at 33q. Measured peak footprints (`bench_memory.py`,
-   `benchmarks/data/memory.png`): Metal sits *on* the theoretical line (32.2 GiB
+   `benchmarks/data/memory.png` — which also charts each cell's GPU utilization):
+   Metal sits *on* the theoretical line (32.2 GiB
    at 32q — genuinely in-place, +150 MB runtime baseline), the CPU backend peaks
    ~3× (tensordot copies), and MLX peaks up to ~20× on shallow circuits at 28q
    (double-buffering plus lazy-graph temporaries). If the working set approaches

@@ -16,6 +16,13 @@ nav = [
   { "Home" = "index.md" },
   { "Getting Started" = "getting-started.md" },
   { "Backends" = "backends.md" },
+  { "How it works" = [
+    { "Overview" = "how-it-works/index.md" },
+    { "Applying gates" = "how-it-works/applying-gates.md" },
+    { "The backends" = "how-it-works/backends.md" },
+    { "Optimizations" = "how-it-works/optimizations.md" },
+    { "Noise & density matrices" = "how-it-works/noise.md" },
+  ] },
   { "Reference" = [
     { "Overview" = "reference/index.md" },
     { "API" = "reference/api.md" },

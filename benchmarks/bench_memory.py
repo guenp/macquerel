@@ -28,6 +28,16 @@ vectorization, a ``4**N * 8``-byte doubled statevector, so it inherits each
 backend's multiplier at the doubled count — N=16 on Metal is a 32 GiB state,
 the largest cell that fits the 64 GiB cap.
 
+Each cell also records **GPU utilization**: while the worker runs, the parent
+samples the IORegistry's accelerator statistics (``ioreg -c IOAccelerator``,
+the "Device Utilization %" counter — no sudo needed, unlike ``powermetrics``).
+Apple Silicon has exactly one GPU, shared by MLX and Metal alike, so this is
+device-wide busy-percent: it shows the cpu backend pinning the GPU at its idle
+baseline (a few % of display compositing) and the GPU backends climbing with N
+as the per-gate dispatches grow wide enough to fill the cores. Sub-second
+small-N cells may catch only a couple of samples — read those cells as "the
+GPU barely woke up", which is exactly the small-N dispatch story.
+
 Results merge into the existing --json on every write, so one series can be
 re-measured (e.g. ``--series dm``) without re-running the others; the plot
 always redraws every series present in the file.
@@ -45,6 +55,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -125,10 +136,34 @@ def run_worker(args) -> int:
 
 
 # ----------------------------------------------------------------------------
-# Parent: run each cell under /usr/bin/time -l and parse the ledger numbers.
+# Parent: run each cell under /usr/bin/time -l and parse the ledger numbers,
+# sampling GPU utilization from the IORegistry while the worker runs.
 # ----------------------------------------------------------------------------
 _FOOTPRINT_RE = re.compile(r"^\s*(\d+)\s+peak memory footprint", re.M)
 _MAXRSS_RE = re.compile(r"^\s*(\d+)\s+maximum resident set size", re.M)
+_GPU_UTIL_RE = re.compile(r'"Device Utilization %"=(\d+)')
+_GPU_SAMPLE_PERIOD_S = 0.15
+
+
+def _gpu_util_sample() -> int | None:
+    """One device-wide GPU busy-percent sample (Apple Silicon has one GPU).
+
+    Reads the accelerator's PerformanceStatistics from the IORegistry — the
+    same counter Activity Monitor's GPU history shows. Returns None if the
+    counter is unavailable (non-Apple GPU, sandboxed, ...) so cells degrade to
+    memory-only measurements instead of failing.
+    """
+    try:
+        out = subprocess.run(
+            ["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+    except Exception:
+        return None
+    m = _GPU_UTIL_RE.search(out)
+    return int(m.group(1)) if m else None
 
 
 def measure_cell(backend: str, n: int, timeout: float, dm: bool = False) -> dict:
@@ -145,7 +180,29 @@ def measure_cell(backend: str, n: int, timeout: float, dm: bool = False) -> dict
     ]
     if dm:
         cmd.append("--dm")
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    samples: list[int] = []
+    stop = threading.Event()
+
+    def poll() -> None:
+        while not stop.is_set():
+            s = _gpu_util_sample()
+            if s is not None:
+                samples.append(s)
+            stop.wait(_GPU_SAMPLE_PERIOD_S)
+
+    poller = threading.Thread(target=poll, daemon=True)
+    poller.start()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    finally:
+        stop.set()
+        poller.join()
+        # The driver's utilization counter is a short windowed average that
+        # lags the work; one trailing sample catches activity near cell exit.
+        s = _gpu_util_sample()
+        if s is not None:
+            samples.append(s)
     if proc.returncode != 0:
         msg = (proc.stderr.strip().splitlines() or ["worker exited nonzero"])[-1]
         raise RuntimeError(msg[:120])
@@ -153,7 +210,12 @@ def measure_cell(backend: str, n: int, timeout: float, dm: bool = False) -> dict
     rss = _MAXRSS_RE.search(proc.stderr)
     if not fp or not rss:
         raise RuntimeError("could not parse /usr/bin/time -l output")
-    return {"footprint": int(fp.group(1)), "maxrss": int(rss.group(1))}
+    cell = {"footprint": int(fp.group(1)), "maxrss": int(rss.group(1))}
+    if samples:
+        cell["gpu_util_peak"] = max(samples)
+        cell["gpu_util_mean"] = round(sum(samples) / len(samples), 1)
+        cell["gpu_util_samples"] = len(samples)
+    return cell
 
 
 def est_peak_gib(backend: str, n: int, dm: bool = False) -> float:
@@ -253,7 +315,9 @@ def main() -> None:
                 try:
                     cell = measure_cell(b, n, args.timeout, dm=dm)
                     results[measured_key][b][str(n)] = cell
-                    row += f" {cell['footprint'] / 1024**3:>11.3g}G"
+                    util = cell.get("gpu_util_peak")
+                    tag = f"@{util:>3}%" if util is not None else "     "
+                    row += f" {cell['footprint'] / 1024**3:>6.3g}G{tag}"
                 except Exception as e:
                     row += f" ERR({str(e)[:20]})"
             print(row, flush=True)
@@ -284,7 +348,13 @@ def make_plot(results: dict, backends: list[str], path: str) -> None:
         print("matplotlib not installed — skipping chart (raw data still saved).")
         return
 
-    fig, ax = plt.subplots(figsize=(9.5, 6))
+    fig, (ax, ax_gpu) = plt.subplots(
+        2,
+        1,
+        figsize=(9.5, 8),
+        sharex=True,
+        gridspec_kw={"height_ratios": (3, 1)},
+    )
     theory = {int(k): v for k, v in results.get("theoretical_bytes", {}).items()}
     ns = sorted(theory)
     if ns:
@@ -344,7 +414,6 @@ def make_plot(results: dict, backends: list[str], path: str) -> None:
             color=BACKEND_COLORS.get(b),
             label=f"measured peak — {b} density matrix",
         )
-    ax.set_xlabel("qubits N")
     ax.set_ylabel("RAM")
     ax.set_yscale("log", base=2)
     ax.set_ylim(bottom=lo)
@@ -359,6 +428,37 @@ def make_plot(results: dict, backends: list[str], path: str) -> None:
     )
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(fontsize=8, loc="lower right")
+
+    # GPU utilization panel: there is exactly one GPU (shared by MLX/Metal);
+    # this is its device-wide peak busy-percent during each cell, sampled from
+    # the IORegistry. cpu cells trace the idle baseline (display compositing).
+    for measured_key, suffix, style in (
+        ("measured", "statevector", {"marker": "o", "markersize": 4, "linestyle": "-"}),
+        ("measured_dm", "density matrix", {"marker": "^", "markersize": 5, "linestyle": "--"}),
+    ):
+        for b in backends:
+            cells = {int(k): v for k, v in results.get(measured_key, {}).get(b, {}).items()}
+            xs = sorted(x for x in cells if "gpu_util_peak" in cells[x])
+            if not xs:
+                continue
+            ax_gpu.plot(
+                xs,
+                [cells[x]["gpu_util_peak"] for x in xs],
+                linewidth=1.6,
+                color=BACKEND_COLORS.get(b),
+                label=f"{b} {suffix}",
+                **style,
+            )
+    ax_gpu.set_xlabel("qubits N")
+    ax_gpu.set_ylabel("GPU busy %")
+    ax_gpu.set_ylim(0, 105)
+    ax_gpu.set_title(
+        "Peak utilization of the (single) GPU per cell — device-wide, via IORegistry",
+        fontsize=9,
+    )
+    ax_gpu.grid(True, alpha=0.3)
+    if ax_gpu.lines:
+        ax_gpu.legend(fontsize=7, loc="upper left", ncol=2)
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     print(f"Chart -> {path}")
