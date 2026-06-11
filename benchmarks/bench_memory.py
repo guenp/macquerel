@@ -135,6 +135,11 @@ def main() -> None:
     )
     ap.add_argument("--json", default="benchmarks/data/memory.json")
     ap.add_argument("--plot", default="benchmarks/data/memory.png")
+    ap.add_argument(
+        "--replot",
+        action="store_true",
+        help="skip measuring; redraw --plot from the existing --json",
+    )
     # Worker mode (internal).
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--backend", default=None, help=argparse.SUPPRESS)
@@ -143,6 +148,11 @@ def main() -> None:
 
     if args.worker:
         raise SystemExit(run_worker(args))
+
+    if args.replot:
+        results = json.loads(Path(args.json).read_text())
+        make_plot(results, args.backends, args.plot)
+        return
 
     if sys.platform != "darwin":
         raise SystemExit("this benchmark relies on macOS /usr/bin/time -l ledger output")
@@ -179,31 +189,43 @@ def main() -> None:
     make_plot(results, args.backends, args.plot)
 
 
+def _fmt_bytes(x: float, _pos=None) -> str:
+    """Human-readable byte tick labels (256 B, 4 KiB, 1 GiB, ...)."""
+    for unit, size in (("GiB", 2**30), ("MiB", 2**20), ("KiB", 2**10)):
+        if x >= size:
+            return f"{x / size:g} {unit}"
+    return f"{x:g} B"
+
+
 def make_plot(results: dict, backends: list[str], path: str) -> None:
     try:
         import matplotlib
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.ticker import FixedLocator, FuncFormatter, NullFormatter
     except ImportError:
         print("matplotlib not installed — skipping chart (raw data still saved).")
         return
 
     fig, ax = plt.subplots(figsize=(9, 5.5))
-    ns = sorted(results["theoretical_bytes"])
+    theory = {int(k): v for k, v in results["theoretical_bytes"].items()}
+    ns = sorted(theory)
     ax.plot(
         ns,
-        [results["theoretical_bytes"][n] / 1024**3 for n in ns],
+        [theory[n] for n in ns],
         "k--",
         linewidth=1.5,
         label="theoretical statevector (2$^N$ × 8 B, complex64)",
     )
+    lo, hi = min(theory.values()), max(theory.values())
     for b in backends:
-        cells = results["measured"].get(b, {})
+        cells = {int(k): v for k, v in results["measured"].get(b, {}).items()}
         if not cells:
             continue
-        xs = sorted(int(k) for k in cells)
-        ys = [cells[x]["footprint"] / 1024**3 for x in xs]
+        xs = sorted(cells)
+        ys = [cells[x]["footprint"] for x in xs]
+        hi = max(hi, max(ys))
         ax.plot(
             xs,
             ys,
@@ -214,8 +236,13 @@ def make_plot(results: dict, backends: list[str], path: str) -> None:
             label=f"measured peak footprint — {b}",
         )
     ax.set_xlabel("qubits N")
-    ax.set_ylabel("RAM (GiB)")
+    ax.set_ylabel("RAM")
     ax.set_yscale("log", base=2)
+    # Readable byte ticks every 16x instead of raw 2^k exponents.
+    exps = range(int(np.floor(np.log2(lo))) // 4 * 4, int(np.ceil(np.log2(hi))) + 4, 4)
+    ax.yaxis.set_major_locator(FixedLocator([2.0**e for e in exps]))
+    ax.yaxis.set_major_formatter(FuncFormatter(_fmt_bytes))
+    ax.yaxis.set_minor_formatter(NullFormatter())
     ax.set_title(
         "Statevector RAM: theoretical vs measured peak footprint (GHZ, per-cell subprocess)"
     )
