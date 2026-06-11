@@ -48,6 +48,77 @@ def _perm_gather_kernel(data, src):
     return data[src]
 
 
+# Step 33: custom dense-gate Metal kernel (mx.fast.metal_kernel).
+#
+# mx.tensordot applies a dense k-qubit gate as matmul over a *permuted copy*
+# of the state — its internal transpose of the input is the dominant cost on
+# scattered-target circuits (and the reason Step 23 only tracked the output
+# axis order). This kernel applies the gate the way the native Metal backend
+# does (Step 25): one thread owns the 2**k amplitudes of one group (all basis
+# states sharing the same non-target bits), reads them, multiplies by the
+# gate matrix, and writes them back to the same positions — no permutation of
+# the state in either direction. MLX kernel inputs are const device (issue
+# #2547), so unlike the native backend the result lands in a fresh output
+# buffer (double-buffered, like every other MLX gate path).
+#
+# The gate width K and control count NC are baked into the source per
+# (k, nc): the m/j loops unroll and amp[]/idx[] live in registers. Threads
+# whose control bits are not all set must still copy their group through to
+# the output buffer.
+_MLX_DENSE_KERNEL_TEMPLATE = r"""
+    #define K_FIXED {k}u
+    #define KDIM (1u << K_FIXED)
+    #define NC {nc}u
+
+    uint3 gid = thread_position_in_grid;
+    uint3 gdim = threads_per_grid;
+    ulong g = ((ulong)gid.z * gdim.y + gid.y) * gdim.x + gid.x;
+
+    // Expand the group id into a base index with 0 at every target bit
+    // (ascending target bit positions so higher bits shift up correctly).
+    ulong base = g;
+    for (uint j = 0u; j < K_FIXED; ++j) {{
+        ulong mask = ((ulong)1 << tpos_sorted[j]) - 1;
+        base = ((base & ~mask) << 1) | (base & mask);
+    }}
+
+    bool act = true;
+    for (uint c = 0u; c < NC; ++c) {{
+        if (((base >> cpos[c]) & 1u) == 0u) {{ act = false; break; }}
+    }}
+
+    complex64_t amp[KDIM];
+    ulong idx[KDIM];
+    for (uint m = 0u; m < KDIM; ++m) {{
+        ulong id = base;
+        for (uint j = 0u; j < K_FIXED; ++j) {{
+            uint v = (m >> (K_FIXED - 1u - j)) & 1u;
+            id |= (ulong)v << tpos[j];
+        }}
+        idx[m] = id;
+        amp[m] = state[id];
+    }}
+    if (act) {{
+        for (uint m = 0u; m < KDIM; ++m) {{
+            complex64_t acc = complex64_t(0.0f, 0.0f);
+            for (uint c = 0u; c < KDIM; ++c) {{
+                acc += M[m * KDIM + c] * amp[c];
+            }}
+            out[idx[m]] = acc;
+        }}
+    }} else {{
+        for (uint m = 0u; m < KDIM; ++m) {{
+            out[idx[m]] = amp[m];
+        }}
+    }}
+"""
+
+# Beyond this gate width the per-thread amp[]/idx[] arrays (2**k registers)
+# start spilling; fall back to the tensordot path. Fusion caps dense gates at
+# 4 qubits, so the kernel covers everything the compiler emits.
+_MLX_DENSE_KERNEL_MAX_K = 6
+
+
 class MLXBackend:
     """
     MLX-accelerated backend for Apple Silicon. State is stored as a single
@@ -76,6 +147,8 @@ class MLXBackend:
         # P8: compile the hot permutation gather so MLX fuses the index math +
         # gather into one kernel and caches the trace per input shape.
         self._perm_kernel = mx.compile(_perm_gather_kernel)
+        # Step 33: per-(gate width, control count) specialized dense kernels.
+        self._dense_kernels: dict[tuple[int, int], object] = {}
         # Step 24: gate applications since the last async_eval kick.
         self._applies_since_eval = 0
 
@@ -326,6 +399,62 @@ class MLXBackend:
         new_data = mx.where(mask, gated, sv.data)  # ty: ignore[invalid-argument-type]
         return MLXState(data=new_data, n_qubits=n, perm=sv.perm)
 
+    def _dense_kernel(self, k: int, nc: int):
+        """The Step 33 dense-gate kernel specialized to (gate width, #controls)."""
+        key = (k, nc)
+        kernel = self._dense_kernels.get(key)
+        if kernel is None:
+            kernel = mx.fast.metal_kernel(
+                name=f"macquerel_dense_k{k}_nc{nc}",
+                input_names=["state", "M", "tpos", "tpos_sorted", "cpos"],
+                output_names=["out"],
+                source=_MLX_DENSE_KERNEL_TEMPLATE.format(k=k, nc=nc),
+            )
+            self._dense_kernels[key] = kernel
+        return kernel
+
+    def _apply_dense_kernel(
+        self,
+        sv: MLXState,
+        mat: np.ndarray,
+        targets: list[int],
+        controls: list[int],
+    ) -> MLXState:
+        """Dense/controlled gate via the custom group-per-thread kernel (Step 33).
+
+        Layout-preserving: each thread rewrites its own group in place (well,
+        into the same positions of the output buffer), so `perm` carries over
+        unchanged — no tensordot input permutation, no Step 23 perm growth.
+        """
+        n = sv.n_qubits
+        k = len(targets)
+        phys = self._phys(sv, targets)
+        cphys = self._phys(sv, controls) if controls else []
+        # Bit position of physical axis a in the linear index (axis 0 = MSB).
+        tpos = np.array([n - 1 - a for a in phys], dtype=np.uint32)
+        tpos_sorted = np.sort(tpos)
+        cpos = (
+            np.array([n - 1 - a for a in cphys], dtype=np.uint32)
+            if cphys
+            else np.zeros(1, dtype=np.uint32)  # dummy; NC=0 disables the loop
+        )
+        total = 2 ** (n - k)
+        kernel = self._dense_kernel(k, len(cphys))
+        (out,) = kernel(  # ty: ignore[call-non-callable]
+            inputs=[
+                sv.data,
+                mx.array(mat.reshape(-1)),
+                mx.array(tpos),
+                mx.array(tpos_sorted),
+                mx.array(cpos),
+            ],
+            grid=(total, 1, 1),
+            threadgroup=(min(total, 256), 1, 1),
+            output_shapes=[sv.data.shape],
+            output_dtypes=[mx.complex64],
+        )
+        return MLXState(data=out, n_qubits=n, perm=sv.perm)
+
     def _apply_general(
         self,
         sv: MLXState,
@@ -333,10 +462,13 @@ class MLXBackend:
         targets: list[int],
         controls: list[int] | None,
     ) -> MLXState:
-        """General dense gate, kept on the GPU via mx.tensordot (Step 23: the
-        contracted axes stay in front; only the axis permutation is updated)."""
+        """General dense gate (Step 33: custom group-per-thread Metal kernel;
+        tensordot fallback for gates wider than the kernel's register budget)."""
         n = sv.n_qubits
         mat = matrix.astype(np.complex64)
+
+        if len(targets) <= _MLX_DENSE_KERNEL_MAX_K:
+            return self._apply_dense_kernel(sv, mat, targets, controls or [])
 
         if controls:
             return self._apply_controlled(sv, mat, targets, controls)
