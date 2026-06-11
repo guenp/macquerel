@@ -18,6 +18,14 @@ All notable changes to this project are documented here, following
 
 ### Added
 
+- Add `TrajectorySimulator` (Step 37): Monte-Carlo wavefunction simulation of noisy
+  circuits at statevector (`2**n`) memory — each trajectory samples one Kraus
+  operator per channel with its Born probability and renormalizes, exact in
+  expectation with error ~ `1/sqrt(trajectories)`. Built-in channels jump-sample
+  from a single `abs2sum` marginal (no state copies, Metal-compatible), so noisy
+  simulation reaches the full statevector range instead of the density matrix's
+  n=16 cap: a noisy 30-qubit GHZ runs at 10.3 s/trajectory on Metal with a
+  footprint constant in trajectory count.
 - Add `DensityMatrixSimulator`: noisy circuit simulation over the vectorized density
   matrix (a `4**n` doubled statevector), reusing the CPU/MLX/Metal backends unchanged —
   unitaries apply to the ket and bra axes, Kraus channels as one dense superoperator per

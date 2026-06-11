@@ -682,3 +682,31 @@ previously-skipped dm n=15 (32.2 GiB), both un-skipped by recalibrating
 qaoa par-1.09×. Buffer-donation audit: `MLXState` and the simulator hot path
 hold no extra state references; the per-n arange cache and the pending-eval
 checkpoint (cleared at boundaries) are the only retained arrays.
+
+### Step 37: `TrajectorySimulator` — Monte-Carlo wavefunction noise ✅ (`2b63036`) — noisy circuits at `2**n` memory, 30q GHZ 10.3 s/trajectory
+
+Noisy simulation without the density matrix's `4**n` cost: each trajectory evolves
+an ordinary statevector; every Kraus channel applies one operator sampled with the
+Born probability `p_k = <psi|K_k^dagger K_k|psi>`, then renormalizes. Exact in
+expectation (Mølmer–Castin–Dalibard); error ~`1/sqrt(trajectories)`. Reuses the
+backends, `ChannelOp`s, and fusion (channels stay barriers) unchanged, with auto
+selection at the *statevector* count — noisy circuits reach the Metal range instead
+of the DM's n=16 cap. Jump probabilities need no state copies: every built-in
+channel has **diagonal** effect operators `E_k`, so all `p_k` come from one
+`abs2sum` marginal over the channel qubits (compatible with Metal's in-place
+state); arbitrary non-diagonal `kraus(...)` channels fall back to the channel-qubit
+reduced density matrix off a host view.
+
+Two measured-at-30q memory findings shaped the implementation: (a) a fresh seeded
+backend per trajectory pinned a new state buffer each time — now one derived-seed
+backend per call keeps reproducibility (the whole stream derives from `seed`) and
+shares the pool; (b) re-allocating the state per trajectory accumulated one
+state-sized footprint *per trajectory* — released multi-GiB MTLBuffers are
+reclaimed lazily by the driver and the Step 34 pool caps at 1 GiB — so trajectories
+reset the state in place through the zero-copy view (4 trajectories at 30q:
+47.3 → 21.5 GB peak, now constant in trajectory count). Demo: noisy 30q GHZ
+(depolarizing ×3), 4 trajectories, 4000 shots on Metal — 10.3 s/trajectory.
+Tests: noiseless exactness vs `Simulator`, stochastic agreement with
+`DensityMatrixSimulator` (probabilities, Pauli expectations, a non-diagonal-effect
+channel forcing the fallback), sampling semantics, seeding, backend parity
+(`tests/test_trajectory.py`).

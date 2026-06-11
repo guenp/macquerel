@@ -57,13 +57,11 @@ runtime measured per cell, since most of these trade one for the other).
 > `3decb13` — peaks 19-25× → 3-5×, every runtime cell improved, mlx sv 29-30q and
 > dm n=15 un-skipped; see [`plan_completed.md`](plan_completed.md).
 
-- **Step 37: quantum-trajectory simulator** — Monte-Carlo wavefunction: K stochastic
-  *statevector* trajectories, sampling one Kraus operator per channel per trajectory
-  (probability `||K_k psi||^2`, then renormalize). Memory `2**n` per trajectory, run
-  sequentially — noisy **33-qubit** simulation on Metal instead of the DM's n=16 cap,
-  reusing `Simulator` and the existing `ChannelOp`s. Exact in expectation; sampling
-  noise ~1/sqrt(K). Complements `DensityMatrixSimulator` (exact, small n) as a
-  `TrajectorySimulator` (stochastic, large n).
+> **Step 37 (`TrajectorySimulator`) shipped** as `2b63036` — Monte-Carlo wavefunction
+> noise at `2**n` memory, all built-in channels jump-sampled from one `abs2sum`
+> marginal (no state copies); noisy 30q GHZ on Metal at 10.3 s/trajectory, footprint
+> constant in trajectory count; see [`plan_completed.md`](plan_completed.md).
+
 - **Step 38: `expectation_pauli` via monomial gather** — a Pauli string is monomial, so
   `tr(rho P) = sum_i phase(i) * rho[i, i XOR mask]` (mask = the X/Y bit pattern): a
   gather of `2**n` elements off the zero-copy `_host_view`, like `probabilities`
