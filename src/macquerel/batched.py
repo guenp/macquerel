@@ -30,7 +30,7 @@ from typing import cast
 
 import numpy as np
 
-from macquerel.circuit import Circuit, Gate, MeasureOp
+from macquerel.circuit import ChannelOp, Circuit, Gate, MeasureOp
 
 try:
     import mlx.core as mx  # ty: ignore[unresolved-import]
@@ -248,6 +248,11 @@ class BatchedSimulator:
         widths = {c.n_qubits for c in circuits}
         if len(widths) != 1:
             raise ValueError(f"All circuits must share n_qubits; got {sorted(widths)}")
+        if any(isinstance(op, ChannelOp) for c in circuits for op in c.ops):
+            raise ValueError(
+                "circuits contain noise channels; a statevector batch cannot represent "
+                "mixed states — run them with macquerel.DensityMatrixSimulator"
+            )
         return circuits[0].n_qubits
 
     @staticmethod

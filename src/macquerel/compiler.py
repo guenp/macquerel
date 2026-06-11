@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from macquerel.circuit import Circuit, Gate, MeasureOp
+from macquerel.circuit import ChannelOp, Circuit, Gate, MeasureOp
 from macquerel.gates import classify
 
 # ---------------------------------------------------------------------------
@@ -449,12 +449,14 @@ def fuse_gates(
         open_groups.clear()
 
     for op in circuit.ops:
-        if isinstance(op, MeasureOp):
+        if not isinstance(op, Gate):
+            # MeasureOp / ChannelOp: a non-unitary barrier. Channels do not
+            # commute with the gates around them, so every open group flushes
+            # and the op passes through in place.
             flush_all()
             result.ops.append(op)
             continue
 
-        assert isinstance(op, Gate)
         op_qubits = set(op.targets + op.controls)
 
         # Latest open group sharing a qubit with this gate (ordering barrier).
@@ -534,4 +536,8 @@ def remap_qubits_with_perm(circuit: Circuit) -> tuple[Circuit, dict[int, int]]:
             )
         elif isinstance(op, MeasureOp):
             result.ops.append(MeasureOp(qubits=[perm[q] for q in op.qubits]))
+        elif isinstance(op, ChannelOp):
+            result.ops.append(
+                ChannelOp(name=op.name, kraus=op.kraus, qubits=[perm[q] for q in op.qubits])
+            )
     return result, perm

@@ -1,8 +1,17 @@
 from macquerel.batched import BatchedSimulator
-from macquerel.circuit import Circuit, Gate, MeasureOp
+from macquerel.circuit import ChannelOp, Circuit, Gate, MeasureOp
+from macquerel.density import DensityMatrixSimulator
 from macquerel.simulator import Simulator
 
-__all__ = ["BatchedSimulator", "Circuit", "Gate", "MeasureOp", "Simulator"]
+__all__ = [
+    "BatchedSimulator",
+    "ChannelOp",
+    "Circuit",
+    "DensityMatrixSimulator",
+    "Gate",
+    "MeasureOp",
+    "Simulator",
+]
 
 try:
     from macquerel.adapters.cirq import from_cirq
