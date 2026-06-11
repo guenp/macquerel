@@ -32,7 +32,9 @@ notes.
 ## v0.3
 
 - **Memory-mapped out-of-core backend** — state vector backed by an NVMe file via
-  `np.memmap`, for single large runs past DRAM capacity.
+  `np.memmap`, for single large runs past DRAM capacity. Investigated and expanded
+  into the explicit spill-to-disk design under [v0.4](#v04-spill-to-disk-statevectors-duckdb-style-out-of-core-execution)
+  below — passive OS paging turned out to be the wrong mechanism.
 - **Multi-Mac over Thunderbolt** — distributed state vector using index-bit partitioning
   across machines.
 
@@ -95,6 +97,113 @@ get the same memory profile without eigenvalue-truncation machinery). The
 **memory-mapped out-of-core backend** (v0.3, above) composes with all of these — notably
 Metal's `newBufferWithBytesNoCopy:` accepts page-aligned mmap'd memory, so an
 NVMe-backed density matrix at n≥17 may be feasible on the GPU path too.
+
+---
+
+## v0.4 — Spill-to-disk statevectors (DuckDB-style out-of-core execution)
+
+[DuckDB](https://duckdb.org/2024/07/09/memory-management.html) runs analytical queries
+on larger-than-memory data by giving every operator a fixed memory budget
+(`memory_limit`, default 80% of RAM) and a buffer manager: intermediates live in
+buffer-managed blocks that are spilled to a temporary directory when the budget is
+exceeded and read back in large sequential chunks, so sort/join/aggregate
+[degrade gracefully](https://duckdb.org/2021/08/27/external-sorting.html) to NVMe
+bandwidth instead of failing or swapping. This section investigates whether that
+model transfers to statevector simulation and turns the v0.3 "memory-mapped
+out-of-core backend" bullet into a concrete design.
+
+### What transfers and what doesn't
+
+The workloads differ in one fundamental way: a query touches data *selectively* (cold
+blocks can sit on disk untouched), while a gate touches **every** amplitude — there is
+no cold data during a full-state pass, so a generic LRU buffer pool buys nothing.
+Naively backing the state with `np.memmap` and letting the OS page (the v0.3 sketch)
+inherits exactly this problem: the kernel evicts 16 KiB pages reactively, with no
+knowledge of the access plan, and a 34-qubit gate pass becomes random-fault-ordered
+I/O. What *does* transfer from DuckDB is everything around the buffer pool:
+
+1. **An explicit budget instead of passive paging.** A `memory_limit`-style knob
+   (e.g. `MACQUEREL_MEMORY_LIMIT`, defaulting to today's min(0.45 × RAM, 64 GiB)
+   benchmark gate) and an explicit chunk manager that owns the I/O schedule.
+2. **Sequential, partitioned access.** DuckDB radix-partitions a spilling hash join so
+   each partition is processed *fully* while resident. The statevector analog is
+   index-bit partitioning — the same scheme already planned for multi-Mac: split the
+   state into 2^m chunks by the top m index bits. Gates on the low n−m **local**
+   qubits act independently inside each chunk; only gates on the top m **global**
+   bits pair amplitudes across chunks. Unlike DuckDB, the access pattern is *known at
+   compile time* from the gate's target qubits — no adaptivity needed.
+3. **Maximize work per residency.** The unit of I/O is a "chunk episode": load a
+   chunk (sequential multi-GiB read), apply *every* gate that can run before the next
+   global-bit barrier (the existing fusion + commutation-aware grouping machinery,
+   re-targeted), write it back, prefetch the next chunk meanwhile. This is Doi–Horii
+   cache blocking lifted one level — DRAM as the cache, NVMe as main memory — and it
+   is the entire performance story: one episode costs a full-state read+write
+   regardless of how many gates it carries.
+4. **Graceful degradation.** Budget ≥ state size → one chunk, today's in-RAM Metal
+   path, zero overhead. Budget < state size → the same backend streams chunks.
+   Metal composes directly: `newBufferWithBytesNoCopy:` accepts the page-aligned
+   chunk buffer, so the GPU computes on the resident chunk while the I/O thread
+   prefetches the next — DuckDB's pin/unpin, with exactly three pins live
+   (compute / prefetch / writeback).
+5. **Clean pages skip writeback.** DuckDB drops unmodified cached pages instead of
+   spilling them. The analog: read-only passes (sampling, probabilities,
+   expectation values) stream chunks without writing them back — half the I/O.
+
+### Feasibility numbers (this machine: 128 GiB RAM, 2 TB NVMe, ~6–8 GB/s sequential)
+
+| n | state (2ⁿ × 8 B) | fits | episode cost (read+write @ 7 GB/s) |
+|---|---|---|---|
+| 33 | 64 GiB | RAM (today's ceiling) | — (in-memory) |
+| 34 | 128 GiB | NVMe | ~37 s |
+| 35 | 256 GiB | NVMe | ~75 s |
+| 36 | 512 GiB | NVMe | ~150 s |
+| 37 | 1 TiB | NVMe (~1.6 TB free) | ~5 min |
+
+So spill-to-disk buys **+1 to +4 qubits** of capacity at a slowdown set by the
+local/global structure of the circuit: GHZ at 34q is a handful of episodes (~minutes);
+a QFT, whose controlled-phase gates are diagonal (diagonal gates never touch a global
+bit's *pairing*, only its phase — they are chunk-local at any width), spills cheaply;
+a random dense circuit on scattered qubits is the worst case and needs the remap step
+below to stay off the global bits. Note the asymmetry that makes scheduling decisive:
+local work runs at unified-memory bandwidth, global work at NVMe bandwidth —
+a ~50–100× gap, far steeper than the cache-blocking gap that lost remapping its
+single-machine A/B.
+
+### Steps
+
+- **Step 41: chunked state store + budget knob** — a `ChunkedState` owning one
+  page-aligned file (`MACQUEREL_TEMP_DIR`, default alongside the platform temp dir;
+  checked against free disk up front, deleted on exit — DuckDB's `temp_directory` /
+  `max_temp_directory_size` semantics), a `MACQUEREL_MEMORY_LIMIT` budget, and a
+  three-buffer streaming pipeline (compute / prefetch / writeback) feeding the Metal
+  backend via `newBufferWithBytesNoCopy:`. Correctness gate: identical amplitudes vs
+  the in-RAM path at small n with an artificially tiny budget (the budget knob makes
+  out-of-core testable at 20q in CI).
+- **Step 42: episode scheduler** — compile the fused gate stream into chunk-local
+  episodes split at global-bit barriers; route diagonal/phase gates on global bits
+  into episodes (they need no cross-chunk pairing); skip writeback for read-only
+  passes. A/B metric: episodes per circuit (= full-state I/O passes), then wall time.
+- **Step 43: global bits via remap passes** — when a dense gate needs a global bit,
+  emit one explicit remap episode (swap a global bit with a cold local bit — a
+  paired-chunk streaming pass) instead of pairing chunks ad hoc, then proceed
+  chunk-locally. Reuses the existing disabled-by-default `remap_qubits` machinery,
+  which finally has the cost asymmetry it was built for. A/B: remap-pass count and
+  wall time on the random-circuit benchmark at 34q.
+- **Step 44: out-of-core benchmark + ship gate** — extend `bench_memory.py` with a
+  spilled series (peak RAM must respect the budget; report episodes and effective
+  GB/s against the NVMe roofline) and a 34q GHZ/QFT/random wall-time table. Ship only
+  if 34q runs end-to-end under the default budget without swap and the in-RAM path
+  shows zero regression. SSD-endurance note in the docs: an episode writes the full
+  state (128 GiB at 34q), so deep unfused circuits are a TBW consideration —
+  documented, not engineered around, in v0.4.
+
+Considered and deferred: **on-disk chunk compression** (DuckDB compresses spilled
+blocks; statevector amplitudes of structured circuits compress extremely well — a GHZ
+state is two nonzeros — but random-circuit states are incompressible by Haar-typicality,
+so it only accelerates the easy cases) and a **general buffer pool with LRU eviction**
+(no selectivity in the access pattern — the streaming three-buffer pipeline is the
+whole pool). The multi-Mac item (v0.3) and this section share the index-bit
+partitioning compiler work; whichever ships first pays most of the cost of the second.
 
 ---
 
