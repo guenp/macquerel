@@ -77,15 +77,23 @@ class DensityMatrixSimulator:
 
     # -- public API ----------------------------------------------------------
 
-    def density_matrix(self, circuit: Circuit) -> np.ndarray:
+    def density_matrix(self, circuit: Circuit, *, copy: bool = True) -> np.ndarray:
         """The final density matrix, shape ``(2**n, 2**n)`` complex.
 
-        This materializes the full matrix on the host — ``4**n * 8`` bytes on
-        top of the backend's state. Prefer `probabilities` / `run` /
-        `expectation_pauli` for large n.
+        With ``copy=True`` (default) this materializes the full matrix on the
+        host — ``4**n * 8`` bytes on top of the backend's state. Prefer
+        `probabilities` / `run` / `expectation_pauli` for large n.
+
+        ``copy=False`` (Step 38) returns a read-only-by-convention *view*
+        over the backend's own storage where one exists — zero-copy on CPU
+        and on Metal's unified-memory buffer; MLX still pays one readback.
+        The view is only valid until this simulator runs another circuit on
+        the same backend.
         """
         backend, state = self._evolve(circuit)
         n = circuit.n_qubits
+        if not copy:
+            return self._host_view(backend, state).reshape(2**n, 2**n)
         return backend.to_numpy(state).reshape(2**n, 2**n)
 
     def probabilities(self, circuit: Circuit) -> np.ndarray:
@@ -126,26 +134,42 @@ class DensityMatrixSimulator:
     def expectation_pauli(self, circuit: Circuit, pauli_strings) -> np.ndarray:
         """``tr(rho P)`` for each ``(coeff, [(pauli_char, qubit), ...])`` term.
 
-        ``tr(rho P) = sum_i vec(rho P)[i*2**n + i]`` and
-        ``vec(rho P) = (I (x) P^T) vec(rho)``: each Pauli is applied
-        *transposed* to the bra axis of a host copy, then the diagonal is
-        summed. One full host readback total, plus one copy per term.
+        Step 38: a Pauli string is monomial — ``P|i> = phase(i) |i ^ mask>``
+        with `mask` the X/Y bit pattern — so
+        ``tr(rho P) = sum_i phase(i) * rho[i, i ^ mask]``: a gather of
+        ``2**n`` elements off the (zero-copy on CPU/Metal) host view, with
+        ``phase(i) = i**(#Y) * (-1)**popcount(i & zy_mask)``. Replaces the
+        previous full ``4**n`` readback plus a state-sized copy per term.
         """
-        from macquerel.backends.cpu import CPUBackend
-        from macquerel.gates import I as I_gate
-        from macquerel.gates import X, Y, Z
-
-        pauli_t = {"X": X().T, "Y": Y().T, "Z": Z().T, "I": I_gate().T}
         backend, state = self._evolve(circuit)
         n = circuit.n_qubits
-        vec = backend.to_numpy(state)
-        cpu = CPUBackend()
+        vec = self._host_view(backend, state)
+        dim = np.int64(2**n)
+        idx = np.arange(dim, dtype=np.int64)
         results = []
         for coeff, terms in pauli_strings:
-            work = vec.copy()
+            x_mask = 0  # bits flipped by the string (X and Y)
+            zy_mask = 0  # bits contributing a (-1)**bit sign (Z and Y)
+            n_y = 0
             for pauli_char, qubit in terms:
-                work = cpu.apply_matrix(work, pauli_t[pauli_char], [n + qubit])
-            results.append(coeff * float(np.real(np.sum(work[:: 2**n + 1]))))
+                bit = 1 << (n - 1 - qubit)  # qubit q is bit n-1-q of the index
+                if pauli_char == "X":
+                    x_mask |= bit
+                elif pauli_char == "Y":
+                    x_mask |= bit
+                    zy_mask |= bit
+                    n_y += 1
+                elif pauli_char == "Z":
+                    zy_mask |= bit
+                elif pauli_char != "I":
+                    raise ValueError(f"unknown Pauli {pauli_char!r}")
+            gathered = vec[idx * dim + (idx ^ x_mask)]
+            if zy_mask:
+                signs = 1.0 - 2.0 * (np.bitwise_count(idx & zy_mask) & 1)
+                total = np.sum(signs * gathered)
+            else:
+                total = np.sum(gathered)
+            results.append(coeff * float(np.real(1j**n_y * total)))
         return np.array(results)
 
     def purity(self, circuit: Circuit) -> float:
