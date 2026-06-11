@@ -43,13 +43,6 @@ class MLXState:
     perm: tuple[int, ...] | None = None
 
 
-def _diag_phase_kernel(data, diag, gate_idx):
-    """Diagonal gate: gather the per-amplitude complex phase and multiply.
-
-    Pure-functional so mx.compile can fuse the gather + multiply into one kernel."""
-    return diag[gate_idx] * data
-
-
 def _perm_gather_kernel(data, src):
     """Permutation gate: gather amplitudes by source index."""
     return data[src]
@@ -80,9 +73,8 @@ class MLXBackend:
         # Step 19: autotuned shot-batch size for mx.random.categorical, memoized
         # by category count (2**len(qubits)); see _autotune_batch / sample.
         self._tuned_batch: dict[int, int] = {}
-        # P8: compile the hot elementwise kernels so MLX fuses the gather +
-        # arithmetic into one kernel and caches the trace per input shape.
-        self._diag_kernel = mx.compile(_diag_phase_kernel)
+        # P8: compile the hot permutation gather so MLX fuses the index math +
+        # gather into one kernel and caches the trace per input shape.
         self._perm_kernel = mx.compile(_perm_gather_kernel)
         # Step 24: gate applications since the last async_eval kick.
         self._applies_since_eval = 0
@@ -176,26 +168,40 @@ class MLXBackend:
             mx.async_eval(sv.data)
             self._applies_since_eval = 0
 
-    def _gate_index(self, phys_targets: list[int], n: int) -> mx.array:
-        """Pack the k target bits of every basis index into a gate-row index.
-
-        `phys_targets` are *physical* axis positions (already translated through
-        the state's axis permutation, Step 23).
-        """
-        k = len(phys_targets)
-        indices = self._arange(n)
-        gate_idx = mx.zeros(2**n, dtype=mx.uint32)
-        for bit_pos, q in enumerate(phys_targets):
-            bit = (indices >> (n - 1 - q)) & self._one
-            gate_idx = gate_idx | (bit << (k - 1 - bit_pos))
-        return gate_idx
-
     def _apply_diagonal(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
-        """Diagonal gate: elementwise complex phase multiply (layout-preserving)."""
+        """Diagonal gate: broadcast elementwise phase multiply (layout-preserving).
+
+        Step 32: instead of materializing a full 2**n gather table (k shift/or
+        passes to build a per-amplitude gate-row index, then a full-width
+        gather of the phase), reshape the state so each target qubit gets its
+        own length-2 axis — with the gaps between targets collapsed into
+        single axes — and broadcast-multiply by the (2,)*k diagonal. One
+        elementwise kernel over the state, no index table.
+        """
         n = sv.n_qubits
-        diag_mx = mx.array(np.diag(matrix).astype(np.complex64))
-        gate_idx = self._gate_index(self._phys(sv, targets), n)
-        new_data = self._diag_kernel(sv.data, diag_mx, gate_idx)
+        k = len(targets)
+        phys = self._phys(sv, targets)
+        diag = np.diag(matrix).astype(np.complex64).reshape((2,) * k)
+        # diag axes follow gate target order; sort them to ascending physical
+        # axis order so they line up with the state view built below.
+        diag = np.ascontiguousarray(np.transpose(diag, tuple(np.argsort(phys))))
+        # Compact state view: one axis per target qubit, gaps collapsed, so the
+        # broadcast stays <= 2k+1 dimensional regardless of n.
+        state_shape: list[int] = []
+        diag_shape: list[int] = []
+        prev = 0
+        for a in sorted(phys):
+            if a > prev:
+                state_shape.append(1 << (a - prev))
+                diag_shape.append(1)
+            state_shape.append(2)
+            diag_shape.append(2)
+            prev = a + 1
+        if prev < n:
+            state_shape.append(1 << (n - prev))
+            diag_shape.append(1)
+        diag_mx = mx.array(diag.reshape(diag_shape))
+        new_data = (sv.data.reshape(state_shape) * diag_mx).reshape(-1)
         return MLXState(data=new_data, n_qubits=n, perm=sv.perm)
 
     def _apply_permutation(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
