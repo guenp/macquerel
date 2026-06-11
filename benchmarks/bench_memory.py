@@ -18,9 +18,10 @@ and holds lazy-graph temporaries (~2-4x), CPU tensordot makes reshaped copies
 that flat floor on the left of the chart is Python+NumPy, not the state.
 
 Cells whose pessimistic peak estimate exceeds the memory budget are skipped,
-exactly like bench_statevector (the MLX 16x multiplier cuts it off at 28q on a
-128 GiB machine; its int32 ShapeElem caps it at 30q regardless). The budget is
-additionally hard-capped at 64 GiB per cell, regardless of installed RAM.
+exactly like bench_statevector (MLX's int32 ShapeElem caps it at 30q; since
+Step 36 its measured multiplier is ~5x, so every cell up to that ceiling fits
+a 128 GiB machine). The budget is additionally hard-capped at 64 GiB per
+cell, regardless of installed RAM.
 
 The ``dm`` series measures the v0.3 `DensityMatrixSimulator` (GHZ + a
 depolarizing channel per qubit): an N-qubit density matrix is its row-major

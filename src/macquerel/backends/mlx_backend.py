@@ -25,6 +25,32 @@ except ImportError:
 # there came precisely from not synchronizing.
 _ASYNC_EVAL_INTERVAL = 16
 _ASYNC_EVAL_MIN_QUBITS = 24
+# Step 36: the live lazy-graph set scales with the interval — every pending
+# gate holds a full-width double-buffered intermediate, so interval 16 puts
+# the measured 26-28q peak at ~19-25x the state size (benchmarks/data/
+# memory.json). Above this effective qubit count a single intermediate is
+# >= 0.5 GiB and pipeline depth no longer hides dispatch latency (the GPU is
+# saturated by each gate alone), so the interval tightens to keep only a
+# couple of intermediates live.
+_ASYNC_EVAL_TIGHT_QUBITS = 26
+_ASYNC_EVAL_TIGHT_INTERVAL = 2
+# Step 36: only return the buffer pool to the OS when it is large enough to
+# matter for system memory pressure — an eighth of unified memory (16 GiB on
+# a 128 GiB machine). Clearing a pool the next run would reuse costs that run
+# a re-allocation round trip (measured: qaoa@24q paid 2.4x with an
+# unconditional clear, and was still paying it at a 1 GiB threshold), while
+# pools below this size cannot push the machine toward swap.
+_CLEAR_CACHE_MIN_BYTES: int | None = None
+
+
+def _clear_cache_threshold() -> int:
+    global _CLEAR_CACHE_MIN_BYTES
+    if _CLEAR_CACHE_MIN_BYTES is None:
+        try:
+            _CLEAR_CACHE_MIN_BYTES = max(1 << 30, int(mx.device_info()["memory_size"]) // 8)
+        except Exception:
+            _CLEAR_CACHE_MIN_BYTES = 8 << 30
+    return _CLEAR_CACHE_MIN_BYTES
 
 
 @dataclass
@@ -118,6 +144,46 @@ _MLX_DENSE_KERNEL_TEMPLATE = r"""
 # 4 qubits, so the kernel covers everything the compiler emits.
 _MLX_DENSE_KERNEL_MAX_K = 6
 
+# Step 36: custom monomial (generalized-permutation) kernel.
+#
+# The on-device gather path below builds its source-index table with full-width
+# uint32 arithmetic — out_row / in_row / src plus shift/or temporaries — and
+# the lazy graph keeps every one of those 2**n-sized intermediates live until
+# evaluation: a fused 4-qubit permutation at 28q holds ~5 GiB of index arrays
+# for a 2 GiB state, which is what the 19-25x memory-benchmark peaks were made
+# of (GHZ fuses into a chain of these). This kernel computes the indices in
+# registers instead, exactly like the Step 33 dense kernel: one thread owns a
+# group, reads its 2**k amplitudes through the gate's row permutation, applies
+# the per-row phase, and writes them back to the same positions. The only
+# full-width buffers are the input and output state.
+_MLX_MONOMIAL_KERNEL_TEMPLATE = r"""
+    #define K_FIXED {k}u
+    #define KDIM (1u << K_FIXED)
+
+    uint3 gid = thread_position_in_grid;
+    uint3 gdim = threads_per_grid;
+    ulong g = ((ulong)gid.z * gdim.y + gid.y) * gdim.x + gid.x;
+
+    ulong base = g;
+    for (uint j = 0u; j < K_FIXED; ++j) {{
+        ulong mask = ((ulong)1 << tpos_sorted[j]) - 1;
+        base = ((base & ~mask) << 1) | (base & mask);
+    }}
+
+    ulong idx[KDIM];
+    for (uint m = 0u; m < KDIM; ++m) {{
+        ulong id = base;
+        for (uint j = 0u; j < K_FIXED; ++j) {{
+            uint v = (m >> (K_FIXED - 1u - j)) & 1u;
+            id |= (ulong)v << tpos[j];
+        }}
+        idx[m] = id;
+    }}
+    for (uint m = 0u; m < KDIM; ++m) {{
+        out[idx[m]] = phase[m] * state[idx[gperm[m]]];
+    }}
+"""
+
 
 class MLXBackend:
     """
@@ -149,8 +215,12 @@ class MLXBackend:
         self._perm_kernel = mx.compile(_perm_gather_kernel)
         # Step 33: per-(gate width, control count) specialized dense kernels.
         self._dense_kernels: dict[tuple[int, int], object] = {}
+        # Step 36: per-gate-width specialized monomial kernels.
+        self._monomial_kernels: dict[int, object] = {}
         # Step 24: gate applications since the last async_eval kick.
         self._applies_since_eval = 0
+        # Step 36: the previous checkpoint in the two-deep eval pipeline.
+        self._pending_eval: mx.array | None = None
 
     def _arange(self, n: int) -> mx.array:
         """Cached, evaluated uint32 [0, 2**n) index vector (one per qubit count)."""
@@ -211,6 +281,7 @@ class MLXBackend:
     def to_numpy(self, sv: MLXState) -> np.ndarray:
         self._canonicalize(sv)
         mx.eval(sv.data)
+        self._release_pool(sv.n_qubits)
         return np.array(sv.data).astype(np.complex64)
 
     def apply_matrix(
@@ -233,13 +304,42 @@ class MLXBackend:
         return new
 
     def _maybe_async_eval(self, sv: MLXState) -> None:
-        """Step 24: periodically start evaluating the state without blocking."""
+        """Step 24: periodically start evaluating the state without blocking.
+
+        Step 36: above _ASYNC_EVAL_TIGHT_QUBITS the kick alone is not enough —
+        async_eval never blocks, so on a shallow circuit the host encodes the
+        whole graph before the GPU retires anything and *every* double-buffered
+        intermediate stays live (the measured ~10-25x peaks). Tight states run
+        a two-deep pipeline instead: block on the checkpoint from one interval
+        ago (almost always already finished) before kicking the next, bounding
+        the in-flight set to ~2 intervals while keeping one interval of
+        host/GPU overlap.
+        """
         if sv.n_qubits < _ASYNC_EVAL_MIN_QUBITS:
             return
+        tight = sv.n_qubits >= _ASYNC_EVAL_TIGHT_QUBITS
+        interval = _ASYNC_EVAL_TIGHT_INTERVAL if tight else _ASYNC_EVAL_INTERVAL
         self._applies_since_eval += 1
-        if self._applies_since_eval >= _ASYNC_EVAL_INTERVAL:
+        if self._applies_since_eval >= interval:
+            if tight and self._pending_eval is not None:
+                mx.eval(self._pending_eval)
             mx.async_eval(sv.data)
+            self._pending_eval = sv.data if tight else None
             self._applies_since_eval = 0
+
+    def _release_pool(self, n_qubits: int) -> None:
+        """Step 36: return pooled GPU buffers to the OS at observation boundaries.
+
+        MLX's allocator pools freed buffers and never shrinks on its own, so
+        after a large run the process keeps several state-sized buffers
+        resident even though the graph has retired them. Observation
+        boundaries (readback / sampling) already synchronize, so clearing
+        there costs no pipeline fullness. A small pool stays warm instead —
+        re-allocating it would cost more than it frees.
+        """
+        self._pending_eval = None  # don't pin a retired buffer past the boundary
+        if mx.get_cache_memory() >= _clear_cache_threshold():
+            mx.clear_cache()
 
     def _apply_diagonal(self, sv: MLXState, matrix: np.ndarray, targets: list[int]) -> MLXState:
         """Diagonal gate: broadcast elementwise phase multiply (layout-preserving).
@@ -291,6 +391,11 @@ class MLXBackend:
         bitwise ops, so there is no host-side O(2**n) NumPy table build and no
         host->device copy per gate. The only host work is over the tiny 2**k
         target subspace.
+
+        Step 36: gates within the register budget take the custom monomial
+        kernel instead — the on-device index build materializes ~5 full-width
+        uint32 lazy-graph intermediates per gate, which dominated the measured
+        memory peaks. This path remains as the wide-gate fallback.
         """
         n = sv.n_qubits
         size = 2**n
@@ -309,6 +414,10 @@ class MLXBackend:
         )
         # The nonzero entry of each row — the phase to apply after the gather.
         row_phase = matrix[np.arange(2**k), gate_perm].astype(np.complex64)
+
+        if k <= _MLX_DENSE_KERNEL_MAX_K:
+            return self._apply_monomial_kernel(sv, gate_perm, row_phase, phys)
+
         has_phase = not np.allclose(row_phase, 1.0, atol=1e-6)
 
         indices = self._arange(n)
@@ -398,6 +507,52 @@ class MLXBackend:
 
         new_data = mx.where(mask, gated, sv.data)  # ty: ignore[invalid-argument-type]
         return MLXState(data=new_data, n_qubits=n, perm=sv.perm)
+
+    def _monomial_kernel(self, k: int):
+        """The Step 36 monomial kernel specialized to the gate width."""
+        kernel = self._monomial_kernels.get(k)
+        if kernel is None:
+            kernel = mx.fast.metal_kernel(
+                name=f"macquerel_monomial_k{k}",
+                input_names=["state", "gperm", "phase", "tpos", "tpos_sorted"],
+                output_names=["out"],
+                source=_MLX_MONOMIAL_KERNEL_TEMPLATE.format(k=k),
+            )
+            self._monomial_kernels[k] = kernel
+        return kernel
+
+    def _apply_monomial_kernel(
+        self,
+        sv: MLXState,
+        gate_perm: np.ndarray,
+        row_phase: np.ndarray,
+        phys: list[int],
+    ) -> MLXState:
+        """Monomial gate via the custom group-per-thread kernel (Step 36).
+
+        Layout-preserving like the dense kernel: each thread rewrites its own
+        group into the same positions of the output buffer, so `perm` carries
+        over and the only full-width allocations are the two state buffers.
+        """
+        n = sv.n_qubits
+        k = len(phys)
+        tpos = np.array([n - 1 - a for a in phys], dtype=np.uint32)
+        total = 2 ** (n - k)
+        kernel = self._monomial_kernel(k)
+        (out,) = kernel(  # ty: ignore[call-non-callable]
+            inputs=[
+                sv.data,
+                mx.array(gate_perm),
+                mx.array(row_phase),
+                mx.array(tpos),
+                mx.array(np.sort(tpos)),
+            ],
+            grid=(total, 1, 1),
+            threadgroup=(min(total, 256), 1, 1),
+            output_shapes=[sv.data.shape],
+            output_dtypes=[mx.complex64],
+        )
+        return MLXState(data=out, n_qubits=n, perm=sv.perm)
 
     def _dense_kernel(self, k: int, nc: int):
         """The Step 33 dense-gate kernel specialized to (gate width, #controls)."""
@@ -552,6 +707,7 @@ class MLXBackend:
         n = sv.n_qubits
         self._canonicalize(sv)
         mx.eval(sv.data)
+        self._release_pool(n)
         state = np.array(sv.data).reshape((2,) * n)
         probs2 = np.abs(state) ** 2
 
@@ -597,6 +753,7 @@ class MLXBackend:
         n = sv.n_qubits
         self._canonicalize(sv)
         mx.eval(sv.data)
+        self._release_pool(n)
         arr = np.array(sv.data)
         probs = (np.abs(arr) ** 2).reshape((2,) * n)
         sum_axes = tuple(i for i in range(n) if i not in qubits)
