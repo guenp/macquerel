@@ -2,6 +2,7 @@ from macquerel.batched import BatchedSimulator
 from macquerel.circuit import ChannelOp, Circuit, Gate, MeasureOp
 from macquerel.density import DensityMatrixSimulator
 from macquerel.simulator import Simulator
+from macquerel.trajectory import TrajectorySimulator
 
 __all__ = [
     "BatchedSimulator",
@@ -11,6 +12,7 @@ __all__ = [
     "Gate",
     "MeasureOp",
     "Simulator",
+    "TrajectorySimulator",
 ]
 
 try:
