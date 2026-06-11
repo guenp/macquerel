@@ -24,6 +24,14 @@ All notable changes to this project are documented here, following
   Measured: Metal stays on the theoretical `4**N × 8 B` line (32.2 GiB at N=16) and
   runs a noisy 16-qubit GHZ in 6.0 s.
 
+### Fixed
+
+- Fix sampled bitstring order for `measure(qubits)` lists that permute 3+ qubits out of
+  ascending order (e.g. `measure([1, 2, 0])`): every sampler transposed the marginal by
+  `argsort(qubits)` where the rank permutation (its inverse) is required, producing bits
+  in the wrong positions and disagreeing with the `measure()` collapse path. Sorted
+  lists, `measure_all()`, and two-qubit measure lists were unaffected.
+
 ## [0.2.2] - 2026-06-11
 
 ### Added
