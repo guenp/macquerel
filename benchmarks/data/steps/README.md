@@ -202,3 +202,11 @@ boundary — which picks the faster engine in every measured cell.
 single noisy min-of-3 cells — the reps=9 recheck above puts them at parity or
 better.) Against the full arc, the cumulative geomean vs the *step20* baseline
 now stands at **metal 2.85×, mlx 2.04×, cpu 1.63×** (`plot_steps.py` table).
+
+The refreshed framework comparison (`benchmarks/data/large`, macquerel
+backends re-measured at this line's head; Aer/Qulacs/cpu data unchanged)
+closes the previous line's one remaining external loss: MLX was behind Aer
+on QFT at 24q+ (438 vs 364 ms), and now wins **every circuit from 20q up**
+(qft@24 121 vs 364 ms, qft@26 481 vs 1719 ms). Metal's lead is unchanged or
+better (qft@24 62 ms, random@24 104 ms vs Aer's 364/1014 ms), and MLX even
+takes a cell from Metal at qaoa@28 (478 vs 601 ms).
