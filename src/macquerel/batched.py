@@ -139,10 +139,10 @@ class _Engine:
         probs = xp.abs(states.reshape((states.shape[0],) + (2,) * n)) ** 2
         sum_axes = tuple(1 + i for i in range(n) if i not in qubits)
         joint = xp.sum(probs, axis=sum_axes) if sum_axes else probs
-        # joint axes follow ascending qubit order; reorder to caller order.
-        in_state_order = sorted(range(len(qubits)), key=lambda i: qubits[i])
-        order = [0] + [1 + i for i in in_state_order]
-        joint = xp.transpose(joint, order)
+        # joint axes follow ascending qubit order; reorder to caller order via
+        # the rank permutation (argsort of argsort — see CPUBackend.sample).
+        rank = np.argsort(np.argsort(qubits))
+        joint = xp.transpose(joint, [0] + [1 + int(i) for i in rank])
         joint = joint.reshape((states.shape[0], -1))
         return np.array(joint, dtype=np.float64)
 

@@ -536,8 +536,8 @@ class MetalBackend:
         probs2 = np.abs(npsv.reshape((2,) * n)) ** 2
         sum_axes = tuple(i for i in range(n) if i not in qubits)
         joint = np.sum(probs2, axis=sum_axes)
-        order = sorted(range(len(qubits)), key=lambda i: qubits[i])
-        joint = np.transpose(joint, order)
+        # Rank permutation, not argsort: see CPUBackend.sample.
+        joint = np.transpose(joint, np.argsort(np.argsort(qubits)))
         flat = joint.reshape(-1)
         flat = flat / flat.sum()
         indices = self._rng.choice(2 ** len(qubits), size=shots, p=flat)

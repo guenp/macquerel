@@ -252,9 +252,9 @@ class DensityMatrixSimulator:
         sum_axes = tuple(i for i in range(n) if i not in qubits)
         if sum_axes:
             joint = joint.sum(axis=sum_axes)
-        # Remaining axes follow ascending qubit order; reorder to caller order.
-        order = sorted(range(len(qubits)), key=lambda i: qubits[i])
-        joint = np.transpose(joint, order).reshape(-1)
+        # Remaining axes follow ascending qubit order; reorder to caller order
+        # via the rank permutation (argsort of argsort — see CPUBackend.sample).
+        joint = np.transpose(joint, np.argsort(np.argsort(qubits))).reshape(-1)
         joint = joint / joint.sum()
         indices = self._rng.choice(joint.size, size=shots, p=joint)
         result: Counter = Counter()

@@ -1,6 +1,7 @@
 from collections import Counter
 
 import numpy as np
+import pytest
 
 from macquerel.circuit import Circuit
 from macquerel.simulator import Simulator
@@ -255,3 +256,39 @@ def test_backend_tiers_measure_failure_falls_back(monkeypatch, tmp_path):
 
     monkeypatch.setattr(sim, "_measure_cpu_max", boom)
     assert sim.autotune_backend_tiers(force=True) == sim._CPU_MAX_QUBITS
+
+
+# --- measurement bit order (regression: argsort vs rank in sample()) ---
+
+try:
+    from macquerel.backends.metal_backend import _METAL_AVAILABLE as _METAL_OK
+except ImportError:  # pragma: no cover
+    _METAL_OK = False
+try:
+    import mlx.core  # noqa: F401
+
+    _MLX_OK = True
+except ImportError:
+    _MLX_OK = False
+
+_SAMPLE_BACKENDS = ["cpu"] + (["metal"] if _METAL_OK else []) + (["mlx"] if _MLX_OK else [])
+
+
+@pytest.mark.parametrize("backend", _SAMPLE_BACKENDS)
+@pytest.mark.parametrize("order", [[1, 2, 0], [2, 0, 1], [3, 1, 0, 2]])
+def test_run_measure_unsorted_qubit_list_bit_order(backend, order):
+    """Bit i of each sampled bitstring must be qubits[i], for *any* qubit order.
+
+    sample() used to transpose the marginal with argsort(qubits) where the rank
+    permutation (its inverse) is needed; the two first diverge on 3-cycles, so
+    sorted lists, measure_all, and 2-qubit swaps all hid the bug.
+    """
+    n = max(order) + 1
+    excited = {1, 2}  # deterministic |q0 q1 q2 ...> with X on qubits 1 and 2
+    circuit = Circuit(n)
+    for q in sorted(excited):
+        circuit.x(q)
+    circuit.measure(order)
+    expected = "".join("1" if q in excited else "0" for q in order)
+    counts = Simulator(backend=backend, seed=0).run(circuit, shots=20)
+    assert counts == Counter({expected: 20})

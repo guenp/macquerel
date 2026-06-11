@@ -229,6 +229,16 @@ def test_run_measure_subset_orders_bits_by_qubit_list():
     assert counts == {"10": 50}
 
 
+def test_run_measure_unsorted_qubit_list_bit_order():
+    """Regression: bit i must be qubits[i] for 3-cycle measure lists (the
+    diagonal marginal used argsort(qubits) where the rank permutation is
+    needed, mirroring the statevector samplers)."""
+    qc = Circuit(3)
+    qc.x(1).x(2).measure([1, 2, 0])  # |q0 q1 q2> = |011> -> bits (q1,q2,q0)
+    counts = DensityMatrixSimulator(backend="cpu", seed=0).run(qc, shots=20)
+    assert counts == {"110": 20}
+
+
 def test_run_mid_circuit_measurements_sum_counters():
     qc = Circuit(1)
     qc.measure_all()  # all |0>

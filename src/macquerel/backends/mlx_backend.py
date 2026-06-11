@@ -557,8 +557,8 @@ class MLXBackend:
 
         sum_axes = tuple(i for i in range(n) if i not in qubits)
         joint = np.sum(probs2, axis=sum_axes)
-        qubits_in_state_order = sorted(range(len(qubits)), key=lambda i: qubits[i])
-        joint = np.transpose(joint, qubits_in_state_order)
+        # Rank permutation, not argsort: see CPUBackend.sample.
+        joint = np.transpose(joint, np.argsort(np.argsort(qubits)))
         flat_probs = joint.reshape(-1)
         flat_probs = flat_probs / flat_probs.sum()
         num_categories = flat_probs.size
