@@ -18,6 +18,10 @@ All notable changes to this project are documented here, following
   channels via `kraus(qubits, operators)`, validated for trace preservation at build
   time. Channels act as gate-fusion barriers; the statevector `Simulator` and
   `BatchedSimulator` reject noisy circuits with a pointer to `DensityMatrixSimulator`.
+- Add a "How it works" documentation section: a gentle but thorough introduction to
+  statevector simulation and the library's internals — gate application and gate-kind
+  fast paths, the three backend designs, the optimization playbook, and the vectorized
+  density-matrix noise simulation — with diagrams and literature references.
 - Add `benchmarks/bench_density.py` (runtime across backends/qubit counts on noisy GHZ
   and random-brickwork circuits) and a density-matrix series in
   `benchmarks/bench_memory.py`; both budget-gate cells at min(0.45 × RAM, 64 GiB).
