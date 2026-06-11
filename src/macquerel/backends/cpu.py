@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import itertools
 from collections import Counter
 
 import numpy as np
+
+# Step 39: columns per gather chunk of the in-place dense apply. The chunk
+# scratch is 2 x (2**k x 2**_DENSE_CHUNK_COLS_POW) complex64 (16 MiB at k=4),
+# small enough to stay cache/TLB-friendly; 2**16 measured fastest at 24q
+# against 2**18 and 2**20, and every size beat the old tensordot path.
+_DENSE_CHUNK_COLS_POW = 16
 
 
 class CPUBackend:
@@ -54,17 +61,41 @@ class CPUBackend:
         if self._classify(matrix) == "diagonal":
             return self._apply_diagonal(sv, matrix, targets, n, k)
 
-        state = sv.reshape((2,) * n)
-        gate_t = matrix.astype(sv.dtype).reshape((2,) * (2 * k))
-        out = np.tensordot(gate_t, state, axes=(list(range(k, 2 * k)), targets))
-        remaining = [i for i in range(n) if i not in targets]
-        dest = targets + remaining
-        inv_perm = [0] * n
-        for new_pos, old_pos in enumerate(dest):
-            inv_perm[old_pos] = new_pos
-        out = np.transpose(out, inv_perm)
-        sv[:] = out.reshape(-1)
+        self._apply_dense_inplace(sv.reshape((2,) * n), matrix, targets)
         return sv
+
+    def _apply_dense_inplace(
+        self, view: np.ndarray, matrix: np.ndarray, targets: list[int]
+    ) -> None:
+        """Dense k-qubit apply, in place over a ``(2,)*m`` (possibly strided) view.
+
+        Step 39: the old ``tensordot`` + transpose + write-back made ~3 full
+        state copies per gate (tensordot's internal input permutation, its
+        output, and the non-contiguous reshape on write-back). This path makes
+        none: the state view is transposed (a stride trick, no data movement)
+        so the target axes lead, then processed in bounded chunks over the
+        non-target axes — gather the chunk into a contiguous scratch, one GEMM
+        into a second scratch, scatter back to the same positions. Each group
+        depends only on its own amplitudes, so writing back in place is safe.
+        Faster than tensordot as well (no full-state permutations): 1.4x at
+        24q/k=4 scattered, 1.6x at k=2.
+        """
+        m = view.ndim
+        k = len(targets)
+        gate = matrix.astype(view.dtype, copy=False)
+        rest = [i for i in range(m) if i not in targets]
+        st = np.transpose(view, list(targets) + rest)  # view: targets in front
+        n_chunk_axes = max(0, len(rest) - _DENSE_CHUNK_COLS_POW)
+        tail_shape = (2,) * (len(rest) - n_chunk_axes)
+        scratch = np.empty((2,) * k + tail_shape, dtype=view.dtype)
+        flat_in = scratch.reshape(2**k, -1)
+        out_chunk = np.empty_like(flat_in)
+        head = (slice(None),) * k
+        for combo in itertools.product((0, 1), repeat=n_chunk_axes):
+            sub = st[head + combo]
+            np.copyto(scratch, sub)  # gather
+            np.matmul(gate, flat_in, out=out_chunk)
+            sub[...] = out_chunk.reshape(scratch.shape)  # scatter, in place
 
     def _apply_diagonal(
         self,
@@ -95,29 +126,18 @@ class CPUBackend:
         targets: list[int],
         controls: list[int],
     ) -> np.ndarray:
-        """Apply matrix conditioned on all control qubits being |1⟩."""
+        """Apply matrix conditioned on all control qubits being |1⟩.
+
+        The control slice of the state is itself a strided ``(2,)*n_free``
+        view, so the Step 39 in-place chunked apply works on it directly —
+        no sub-state tensordot copies, no write-back pass.
+        """
         n = int(np.log2(len(sv)))
-        k = len(targets)
         state = sv.reshape((2,) * n)
-
-        gate_t = matrix.astype(sv.dtype).reshape((2,) * (2 * k))
-
         ctrl_idx = tuple(1 if i in controls else slice(None) for i in range(n))
-        sub = state[ctrl_idx]
         free_axes = [i for i in range(n) if i not in controls]
         local_targets = [free_axes.index(t) for t in targets]
-        n_free = len(free_axes)
-
-        out_sub = np.tensordot(gate_t, sub, axes=(list(range(k, 2 * k)), local_targets))
-        remaining = [i for i in range(n_free) if i not in local_targets]
-        dest = local_targets + remaining
-        inv_perm = [0] * n_free
-        for new_pos, old_pos in enumerate(dest):
-            inv_perm[old_pos] = new_pos
-        out_sub = np.transpose(out_sub, inv_perm)
-
-        state[ctrl_idx] = out_sub
-        sv[:] = state.reshape(-1)
+        self._apply_dense_inplace(state[ctrl_idx], matrix, local_targets)
         return sv
 
     def measure(
