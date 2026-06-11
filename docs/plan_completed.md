@@ -710,3 +710,18 @@ Tests: noiseless exactness vs `Simulator`, stochastic agreement with
 `DensityMatrixSimulator` (probabilities, Pauli expectations, a non-diagonal-effect
 channel forcing the fallback), sampling semantics, seeding, backend parity
 (`tests/test_trajectory.py`).
+
+### Step 38: `expectation_pauli` via monomial gather ✅ (`fe6e0a7`) — 6.3× faster, 2.9× less peak (n=14, 4 terms, Metal)
+
+A Pauli string is monomial — `P|i> = phase(i)|i ^ mask>` with `mask` the X/Y bit
+pattern — so `tr(rho P) = sum_i phase(i) * rho[i, i ^ mask]` with
+`phase(i) = i**(#Y) * (-1)**popcount(i & zy_mask)`: one `2**n`-element gather off
+the zero-copy host view (CPU array / Metal unified-memory buffer; MLX pays one
+readback), like `probabilities` already does for the diagonal. Replaces the full
+`4**n` host readback plus a state-sized copy and two CPU gate applies per term —
+at the n=16 Metal ceiling the old path's transients alone were ~3 state sizes
+(~96 GB), past the machine's safe budget. `density_matrix()` gains an opt-in
+`copy=False` zero-copy view with the same mechanism. A/B at n=14 (GHZ +
+depolarizing, 4 mixed terms incl. Y, post-evolve call): 1.63 → 0.26 s and
+13.0 → 4.45 GB peak, identical values; correctness gated against `tr(rho P)` on
+the dense reference across backends (`tests/test_density.py`).

@@ -62,12 +62,10 @@ runtime measured per cell, since most of these trade one for the other).
 > marginal (no state copies); noisy 30q GHZ on Metal at 10.3 s/trajectory, footprint
 > constant in trajectory count; see [`plan_completed.md`](plan_completed.md).
 
-- **Step 38: `expectation_pauli` via monomial gather** — a Pauli string is monomial, so
-  `tr(rho P) = sum_i phase(i) * rho[i, i XOR mask]` (mask = the X/Y bit pattern): a
-  gather of `2**n` elements off the zero-copy `_host_view`, like `probabilities`
-  already does for the diagonal. Replaces today's full `4**n x 8 B` readback plus a
-  `vec.copy()` per term (~64 GiB of transients at n=16). Same idea gives
-  `density_matrix()` an opt-in zero-copy view on Metal.
+> **Step 38 (`expectation_pauli` via monomial gather) shipped** as `fe6e0a7` —
+> n=14/4-term call 6.3× faster at 2.9× less peak, `density_matrix(copy=False)`
+> added; see [`plan_completed.md`](plan_completed.md).
+
 - **Step 39: CPU dense apply without tensordot copies** — the 3.0× is tensordot's full
   output plus a transposed copy. Stage (a): one `np.einsum(..., out=...)` whose output
   index order lands axes in original positions (removes the transpose pass and one
