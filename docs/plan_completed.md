@@ -743,3 +743,22 @@ it the intermediates return. A/B: cpu peaks drop from 3.0× to ~1.03× of theory
 measured cell, growing with size — random@24q 1.70×, qaoa@22q 1.49×, ghz@22-24q
 1.33×, qft@24q 1.31× (`benchmarks/data/steps/step39-*.json`). `_PEAK_MULT` cpu
 4.0 → 1.5.
+
+### Step 40: single-pass ket⊗bra superoperator for narrow DM gates ✅ (`8361126`) — metal/cpu/mlx 1.0-1.09×, two variants rejected on measurement
+
+Control-free DM unitaries now apply as one `kron(U, conj(U))` gate over their
+paired ket+bra axes — one pass over the `4**n` state instead of two — when the
+doubled gate stays inside the backend fast envelope. Eligibility is per gate
+*kind*, because kron preserves it: diagonal superoperators stay diagonal
+(broadcast multiply; eligible to k=4, where the materialized `4**k × 4**k`
+matrix is still small), monomial stays monomial (k≤3 — doubled width 6, the MLX
+kernel cap), dense caps at k=2. Superoperators are memoized by matrix bytes;
+controlled gates keep two passes (a controlled-U's ket⊗bra product
+cross-multiplies its control projectors and is not a single controlled gate).
+The decisive findings were the **rejections**: dense superops at doubled width 6
+spill GPU registers (random_noise@12-14q on Metal **5× slower**), and capping
+the DM fusion width at the superop width (so every fused gate qualifies) loses
+more to extra passes than single-pass saves (ghz_noise on cpu −21%). The
+shipped kind-aware rule is a small, consistent win with no regressions: metal
+1.00-1.09×, cpu 1.02-1.07× (reps=7 where reps=3 looked noisy), mlx 0.99-1.06×
+(`benchmarks/data/steps/step40-*.json`).

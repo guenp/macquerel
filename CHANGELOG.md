@@ -7,6 +7,10 @@ All notable changes to this project are documented here, following
 
 ### Changed
 
+- Apply narrow control-free density-matrix unitaries as a single
+  `kron(U, conj(U))` superoperator pass over the paired ket+bra axes (Step 40),
+  one full-state pass instead of two, with kind-aware eligibility (diagonal k<=4,
+  monomial k<=3, dense k<=2): a small consistent win (1.0-1.09x) across backends.
 - Replace the CPU backend's tensordot dense apply with an in-place chunked
   gather/GEMM/scatter (Step 39): peak memory falls from ~3x to ~1.03x of the state
   size (a 28-qubit GHZ now peaks at 2.05 GiB) and runtime improves in every

@@ -45,13 +45,13 @@ notes.
 
 ---
 
-## v0.3.x — RAM usage candidates
+## v0.3.x — RAM usage candidates — **all shipped** (Steps 36-40)
 
-Measured peak-to-theory multipliers (`benchmarks/data/memory.json`, GHZ cells ≥256 MiB,
-statevector and density-matrix series agree): **metal 1.0×** (in-place — nothing left to
-win), **cpu 3.0×**, **mlx 3-5×** (was 19-25× before Step 36). Candidates in priority
-order; each follows the A/B protocol (correctness gate first, then peak footprint *and*
-runtime measured per cell, since most of these trade one for the other).
+The whole line is implemented on branch `perf/v0.3.x-ram`; per-step results live in
+[`plan_completed.md`](plan_completed.md). Peak-to-theory multipliers now stand at
+**metal 1.0×** (in-place), **cpu ~1.03×** (was 3.0× before Step 39), **mlx 3-5×**
+(was 19-25× before Step 36), and noisy simulation past the DM's n=16 cap is covered
+by the trajectory simulator (Step 37).
 
 > **Step 36 (MLX monomial kernel + eval cadence + pool release) shipped** as
 > `3decb13` — peaks 19-25× → 3-5×, every runtime cell improved, mlx sv 29-30q and
@@ -70,13 +70,10 @@ runtime measured per cell, since most of these trade one for the other).
 > 3.0× → 1.03× of theory, runtime up to 1.70× faster, einsum stage (a) rejected
 > on measurement; see [`plan_completed.md`](plan_completed.md).
 
-- **Step 40: single-pass ket⊗bra superoperator for narrow gates (DM)** — apply
-  `kron(U, conj(U))` on `[t, t+n]` in one pass instead of U then `conj(U)` (two full
-  passes over the `4**n` state). Halves memory traffic and, on MLX, the live graph
-  intermediates. Only for gates of ≤2-3 original qubits (the doubled width must stay
-  within the dense-kernel sweet spots: Metal registers spill and the MLX custom kernel
-  caps at k=6); wider fused gates keep the two-pass path. Interacts with the fusion
-  width — A/B both knobs together.
+> **Step 40 (single-pass ket⊗bra superoperator) shipped** as `8361126` — kind-aware
+> eligibility (diagonal k≤4 / monomial k≤3 / dense k≤2), 1.0-1.09× across backends;
+> dense width-6 superops and fusion-width capping both rejected on measurement; see
+> [`plan_completed.md`](plan_completed.md).
 
 Considered and rejected: **Hermitian half-storage** (a clean 2× — rho is determined by
 its upper triangle — but it breaks the "reuse the statevector backends unchanged"
