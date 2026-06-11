@@ -66,12 +66,10 @@ runtime measured per cell, since most of these trade one for the other).
 > n=14/4-term call 6.3× faster at 2.9× less peak, `density_matrix(copy=False)`
 > added; see [`plan_completed.md`](plan_completed.md).
 
-- **Step 39: CPU dense apply without tensordot copies** — the 3.0× is tensordot's full
-  output plus a transposed copy. Stage (a): one `np.einsum(..., out=...)` whose output
-  index order lands axes in original positions (removes the transpose pass and one
-  temp, → ~2×). Stage (b): chunk the apply over non-target axes with bounded scratch
-  (→ ~1× + chunk). Each stage is worth ~1 statevector qubit (≈ half a DM qubit) at
-  fixed RAM.
+> **Step 39 (CPU in-place chunked dense apply) shipped** as `bb230f0` — peaks
+> 3.0× → 1.03× of theory, runtime up to 1.70× faster, einsum stage (a) rejected
+> on measurement; see [`plan_completed.md`](plan_completed.md).
+
 - **Step 40: single-pass ket⊗bra superoperator for narrow gates (DM)** — apply
   `kron(U, conj(U))` on `[t, t+n]` in one pass instead of U then `conj(U)` (two full
   passes over the `4**n` state). Halves memory traffic and, on MLX, the live graph

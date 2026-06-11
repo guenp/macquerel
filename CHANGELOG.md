@@ -7,6 +7,16 @@ All notable changes to this project are documented here, following
 
 ### Changed
 
+- Replace the CPU backend's tensordot dense apply with an in-place chunked
+  gather/GEMM/scatter (Step 39): peak memory falls from ~3x to ~1.03x of the state
+  size (a 28-qubit GHZ now peaks at 2.05 GiB) and runtime improves in every
+  measured cell, up to 1.70x on random@24q. The controlled path reuses the same
+  in-place routine on its control-slice view.
+- Compute `DensityMatrixSimulator.expectation_pauli` as a monomial gather (Step 38):
+  `tr(rho P) = sum_i phase(i) * rho[i, i ^ mask]` off the zero-copy host view,
+  replacing a full `4**n` readback plus a state-sized copy per term — 6.3x faster
+  at 2.9x less peak (n=14, 4 terms, Metal). `density_matrix()` gains an opt-in
+  `copy=False` zero-copy view.
 - Cut MLX peak memory from 19-25x to 3-5x of the state size (Step 36): monomial
   (permutation) gates now use a register-resident group-per-thread Metal kernel
   instead of materializing full-width gather-index intermediates in the lazy graph;

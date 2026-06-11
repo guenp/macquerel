@@ -725,3 +725,21 @@ at the n=16 Metal ceiling the old path's transients alone were ~3 state sizes
 depolarizing, 4 mixed terms incl. Y, post-evolve call): 1.63 → 0.26 s and
 13.0 → 4.45 GB peak, identical values; correctness gated against `tr(rho P)` on
 the dense reference across backends (`tests/test_density.py`).
+
+### Step 39: CPU in-place chunked dense apply ✅ (`bb230f0`) — peaks 3.0× → 1.03×, runtime up to 1.70× faster
+
+The tensordot dense path made ~3 full state copies per gate (its internal input
+permutation, its output, and the non-contiguous reshape on write-back). Replaced
+with an in-place chunked apply: transpose the `(2,)*n` view so the target axes
+lead (a stride trick, no data movement), then loop bounded chunks over the
+non-target axes — gather a chunk into contiguous scratch, one GEMM into a second
+scratch, scatter back to the same positions (safe in place: each group depends
+only on its own amplitudes). Chunk size 2¹⁶ columns measured fastest (16 MiB of
+scratch at k=4); the controlled path reuses the same routine on its control-slice
+view. Stage (a) of the plan — `np.einsum(..., out=...)` — was prototyped and
+**rejected**: without `optimize` einsum loses BLAS (14× slower at 24q/k=4), with
+it the intermediates return. A/B: cpu peaks drop from 3.0× to ~1.03× of theory
+(28q GHZ 6.04 → 2.05 GiB, dm n=14 6.04 → 2.06 GiB) and runtime improves in every
+measured cell, growing with size — random@24q 1.70×, qaoa@22q 1.49×, ghz@22-24q
+1.33×, qft@24q 1.31× (`benchmarks/data/steps/step39-*.json`). `_PEAK_MULT` cpu
+4.0 → 1.5.
