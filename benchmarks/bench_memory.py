@@ -295,11 +295,13 @@ def make_plot(results: dict, backends: list[str], path: str) -> None:
             linewidth=1.5,
             label="theoretical statevector (2$^N$ × 8 B, complex64)",
         )
-    lo = min(theory.values()) if theory else 2.0**20
+    # Floor the y-axis at 16 MiB: below that everything hides under the
+    # interpreter baseline anyway, and the empty decades of theoretical line
+    # only squash the measured curves.
+    lo = 2.0**24
     hi = max(theory.values()) if theory else lo
     dm_theory = {int(k): v for k, v in results.get("theoretical_dm_bytes", {}).items()}
     if dm_theory:
-        lo = min(lo, min(dm_theory.values()))
         dns = sorted(dm_theory)
         ax.plot(
             dns,
@@ -345,6 +347,7 @@ def make_plot(results: dict, backends: list[str], path: str) -> None:
     ax.set_xlabel("qubits N")
     ax.set_ylabel("RAM")
     ax.set_yscale("log", base=2)
+    ax.set_ylim(bottom=lo)
     # Readable byte ticks every 16x instead of raw 2^k exponents.
     exps = range(int(np.floor(np.log2(lo))) // 4 * 4, int(np.ceil(np.log2(hi))) + 4, 4)
     ax.yaxis.set_major_locator(FixedLocator([2.0**e for e in exps]))
@@ -355,7 +358,7 @@ def make_plot(results: dict, backends: list[str], path: str) -> None:
         "(GHZ / GHZ + depolarizing, per-cell subprocess)"
     )
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=8, loc="lower right")
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     print(f"Chart -> {path}")
