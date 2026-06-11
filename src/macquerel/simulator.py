@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from macquerel.circuit import Circuit, Gate, MeasureOp
+from macquerel.circuit import ChannelOp, Circuit, Gate, MeasureOp
 from macquerel.compiler import fuse_gates, remap_qubits_with_perm
 
 try:
@@ -281,6 +281,11 @@ class Simulator:
         The fusion width defaults per backend (Step 30), so fusion needs to
         know which backend this circuit will run on.
         """
+        if any(isinstance(op, ChannelOp) for op in circuit.ops):
+            raise ValueError(
+                "circuit contains noise channels; a statevector cannot represent "
+                "mixed states — run it with macquerel.DensityMatrixSimulator"
+            )
         fused = fuse_gates(circuit, backend=self._backend_name_for(circuit.n_qubits))
         if os.environ.get("MACQUEREL_REMAP") != "1":
             return fused, None

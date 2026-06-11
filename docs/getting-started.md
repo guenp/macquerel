@@ -36,6 +36,32 @@ circuit.h(0).cx(0, 1)
 sv = sim.statevector(circuit)      # [0.707+0j, 0, 0, 0.707+0j]
 ```
 
+## Simulating noise
+
+Channel builders add Kraus-operator noise to a circuit; run it with the
+`DensityMatrixSimulator`:
+
+```python
+from macquerel import Circuit, DensityMatrixSimulator
+
+circuit = Circuit(2)
+circuit.h(0).cx(0, 1)              # Bell state...
+circuit.depolarizing(0, 0.05)      # ...through a depolarizing channel
+circuit.amplitude_damping(1, 0.1)  # ...and T1 decay
+circuit.measure_all()
+
+dm = DensityMatrixSimulator()
+counts = dm.run(circuit, shots=1000)   # noisy counts: some 01/10 leakage
+rho = dm.density_matrix(circuit)       # full (2**n, 2**n) density matrix
+purity = dm.purity(circuit)            # tr(rho^2) < 1 under noise
+```
+
+Built-in channels: `bit_flip`, `phase_flip`, `depolarizing`, `amplitude_damping`,
+`phase_damping`, plus arbitrary (multi-qubit) channels via
+`circuit.kraus(qubits, operators)`. An n-qubit density matrix costs what a
+2n-qubit statevector costs, so noisy simulation tops out around 16 qubits —
+see the [API reference](reference/api.md) for details.
+
 ## Choosing a backend
 
 ```python

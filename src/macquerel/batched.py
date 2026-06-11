@@ -30,7 +30,7 @@ from typing import cast
 
 import numpy as np
 
-from macquerel.circuit import Circuit, Gate, MeasureOp
+from macquerel.circuit import ChannelOp, Circuit, Gate, MeasureOp
 
 try:
     import mlx.core as mx  # ty: ignore[unresolved-import]
@@ -139,10 +139,10 @@ class _Engine:
         probs = xp.abs(states.reshape((states.shape[0],) + (2,) * n)) ** 2
         sum_axes = tuple(1 + i for i in range(n) if i not in qubits)
         joint = xp.sum(probs, axis=sum_axes) if sum_axes else probs
-        # joint axes follow ascending qubit order; reorder to caller order.
-        in_state_order = sorted(range(len(qubits)), key=lambda i: qubits[i])
-        order = [0] + [1 + i for i in in_state_order]
-        joint = xp.transpose(joint, order)
+        # joint axes follow ascending qubit order; reorder to caller order via
+        # the rank permutation (argsort of argsort — see CPUBackend.sample).
+        rank = np.argsort(np.argsort(qubits))
+        joint = xp.transpose(joint, [0] + [1 + int(i) for i in rank])
         joint = joint.reshape((states.shape[0], -1))
         return np.array(joint, dtype=np.float64)
 
@@ -248,6 +248,11 @@ class BatchedSimulator:
         widths = {c.n_qubits for c in circuits}
         if len(widths) != 1:
             raise ValueError(f"All circuits must share n_qubits; got {sorted(widths)}")
+        if any(isinstance(op, ChannelOp) for c in circuits for op in c.ops):
+            raise ValueError(
+                "circuits contain noise channels; a statevector batch cannot represent "
+                "mixed states — run them with macquerel.DensityMatrixSimulator"
+            )
         return circuits[0].n_qubits
 
     @staticmethod
@@ -271,7 +276,9 @@ class BatchedSimulator:
                 if on_measure is not None:
                     on_measure(states, op.qubits)
                 continue
-            # Signature grouping guarantees ops[pos] is a Gate in every circuit.
+            # Signature grouping guarantees ops[pos] is a Gate in every circuit
+            # (_common_width already rejected circuits with ChannelOps).
+            op = cast(Gate, op)
             mats = np.stack(
                 [cast(Gate, ops[pos]).matrix.astype(np.complex64) for ops in ops_per_circuit]
             )

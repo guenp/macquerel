@@ -39,12 +39,27 @@ class MeasureOp:
     qubits: list[int]
 
 
+@dataclass
+class ChannelOp:
+    """A Kraus-operator noise channel on `qubits`.
+
+    Only the `DensityMatrixSimulator` can execute these; the statevector
+    `Simulator` rejects circuits containing them. Kraus operators are stored
+    as given (already validated by the builder); each is a
+    ``2**len(qubits) x 2**len(qubits)`` complex matrix.
+    """
+
+    name: str
+    kraus: list[np.ndarray]
+    qubits: list[int]
+
+
 class Circuit:
     def __init__(self, n_qubits: int):
         if n_qubits < 1:
             raise ValueError(f"n_qubits must be >= 1, got {n_qubits}")
         self.n_qubits = n_qubits
-        self.ops: list[Gate | MeasureOp] = []
+        self.ops: list[Gate | MeasureOp | ChannelOp] = []
 
     def _check(self, *qubits: int) -> None:
         seen: set[int] = set()
@@ -138,6 +153,49 @@ class Circuit:
         self._check(control, target)
         self._add("CP", CP(lam), [control, target])
         return self
+
+    # ---- noise channels (Kraus operators; executed by DensityMatrixSimulator) ----
+
+    def kraus(self, qubits: list[int], operators: list[np.ndarray], name: str = "Kraus") -> Circuit:
+        """Append an arbitrary Kraus channel on `qubits`.
+
+        `operators` must be ``2**len(qubits)``-dimensional square matrices
+        satisfying ``sum_k K_k^dagger K_k = I`` (validated here). Qubit order
+        matters: the operators' most-significant bit acts on ``qubits[0]``,
+        matching the gate-matrix convention.
+        """
+        from macquerel.noise import validate_kraus
+
+        self._check(*qubits)
+        validate_kraus(operators, len(qubits))
+        ops = [np.asarray(op).astype(np.complex64) for op in operators]
+        self.ops.append(ChannelOp(name=name, kraus=ops, qubits=list(qubits)))
+        return self
+
+    def bit_flip(self, qubit: int, p: float) -> Circuit:
+        from macquerel.noise import bit_flip_kraus
+
+        return self.kraus([qubit], bit_flip_kraus(p), name=f"BitFlip({p})")
+
+    def phase_flip(self, qubit: int, p: float) -> Circuit:
+        from macquerel.noise import phase_flip_kraus
+
+        return self.kraus([qubit], phase_flip_kraus(p), name=f"PhaseFlip({p})")
+
+    def depolarizing(self, qubit: int, p: float) -> Circuit:
+        from macquerel.noise import depolarizing_kraus
+
+        return self.kraus([qubit], depolarizing_kraus(p), name=f"Depolarizing({p})")
+
+    def amplitude_damping(self, qubit: int, gamma: float) -> Circuit:
+        from macquerel.noise import amplitude_damping_kraus
+
+        return self.kraus([qubit], amplitude_damping_kraus(gamma), name=f"AmpDamp({gamma})")
+
+    def phase_damping(self, qubit: int, gamma: float) -> Circuit:
+        from macquerel.noise import phase_damping_kraus
+
+        return self.kraus([qubit], phase_damping_kraus(gamma), name=f"PhaseDamp({gamma})")
 
     def measure(self, qubits: list[int]) -> Circuit:
         self._check(*qubits)

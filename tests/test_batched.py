@@ -1,5 +1,7 @@
 """BatchedSimulator (Step 31): batched results must match per-circuit Simulator runs."""
 
+from collections import Counter
+
 import numpy as np
 import pytest
 
@@ -124,3 +126,18 @@ def test_single_circuit_batch():
     qc.h(0).cx(0, 1)
     sv = BatchedSimulator(backend="cpu").statevectors([qc])
     np.testing.assert_allclose(sv[0], Simulator(backend="cpu").statevector(qc), atol=1e-6)
+
+
+def test_run_measure_unsorted_qubit_list_bit_order():
+    """Regression: bit i must be qubits[i] for 3-cycle measure lists (the
+    batched marginal used argsort(qubits) where the rank permutation is
+    needed, like the single-circuit samplers)."""
+    circuits = []
+    for _ in range(3):
+        qc = Circuit(3)
+        qc.x(1)
+        qc.x(2)  # |q0 q1 q2> = |011>
+        qc.measure([1, 2, 0])
+        circuits.append(qc)
+    for counts in BatchedSimulator(backend="cpu", seed=0).run(circuits, shots=20):
+        assert counts == Counter({"110": 20})
