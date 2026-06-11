@@ -124,9 +124,13 @@ half the bytes of MLX's double-buffering, and MLX additionally throttles its laz
    forces the GPU to synchronize and flush (Metal commits its batched command buffer;
    MLX evaluates its lazy graph). Build the full circuit, then observe once.
 4. **Mind the memory budget.** A state is 2ⁿ × 8 bytes (complex64): 8 GiB at 30q,
-   32 GiB at 32q, 64 GiB at 33q. Metal needs ~1× that (in-place); MLX ~2× plus graph
-   temporaries. If the working set approaches RAM, the OS swaps and runtimes fall off
-   a cliff — that, not compute, is usually what a "slow" 28q+ run is.
+   32 GiB at 32q, 64 GiB at 33q. Measured peak footprints (`bench_memory.py`,
+   `benchmarks/data/memory.png`): Metal sits *on* the theoretical line (32.2 GiB
+   at 32q — genuinely in-place, +150 MB runtime baseline), the CPU backend peaks
+   ~3× (tensordot copies), and MLX peaks up to ~20× on shallow circuits at 28q
+   (double-buffering plus lazy-graph temporaries). If the working set approaches
+   RAM, the OS swaps and runtimes fall off a cliff — that, not compute, is usually
+   what a "slow" 28q+ run is.
 5. **Prefer nearest-neighbor structure** when you have the choice (see the QAOA
    section above).
 6. **Fusion width is already tuned per backend** — metal fuses up to 2 qubits ≤22q,
