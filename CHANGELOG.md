@@ -5,6 +5,35 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-11
+
+### Added
+
+- Add native Metal command-buffer batching and kind-specialized kernels for lower dispatch
+  overhead and faster dense/monomial gate application.
+- Add MLX axis-order tracking and periodic `mx.async_eval` cadence to reduce dense-gate
+  transpose work and eliminate the 28-qubit lazy-graph memory cliff.
+- Add diagonal-run wide fusion, commutation-aware fusion grouping, and backend/qubit-aware
+  default fusion widths.
+- Add opt-in qubit remapping via `MACQUEREL_REMAP=1`; it remains disabled by default after
+  A/B benchmarking showed losses on the measured backends.
+- Add benchmark artifacts and documentation for the shipped Steps 21-30 performance line,
+  including per-step A/B data under `benchmarks/data/steps/`.
+
+### Changed
+
+- Retune automatic backend selection to use CPU through 16 qubits, Metal at 17+ qubits
+  when available, and MLX as the 17-30 qubit fallback when Metal is absent.
+- Refresh large statevector and fusion-width benchmark JSON/plot artifacts after the
+  backend and compiler optimization line.
+- Reorganize `docs/plan.md` so it tracks remaining work while `docs/plan_completed.md`
+  records shipped steps, commit IDs, and measured A/B results.
+
+### Fixed
+
+- Fix quality-check issues in benchmark scripts, backend typing, and GPU differential tests
+  so Ruff, formatting, `ty`, and the full test suite pass together.
+
 ## [0.2.0] - 2026-06-06
 
 ### Added
@@ -64,7 +93,8 @@ All notable changes to this project are documented here, following
 - Gate-fusion compiler and diagonal/permutation/dense gate classification.
 - Cirq and Qiskit import adapters (optional extras).
 
-[Unreleased]: https://github.com/guenp/macquerel/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/guenp/macquerel/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/guenp/macquerel/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/guenp/macquerel/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/guenp/macquerel/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/guenp/macquerel/releases/tag/v0.1.0
