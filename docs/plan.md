@@ -178,7 +178,12 @@ single-machine A/B.
   three-buffer streaming pipeline (compute / prefetch / writeback) feeding the Metal
   backend via `newBufferWithBytesNoCopy:`. Correctness gate: identical amplitudes vs
   the in-RAM path at small n with an artificially tiny budget (the budget knob makes
-  out-of-core testable at 20q in CI).
+  out-of-core testable at 20q in CI). Sub-step: optional **lz4 chunk compression on
+  the writeback path** with a raw fallback when the ratio is poor (DuckDB stores
+  spilled blocks the same way) — multithreaded lz4 decompresses at tens of GB/s,
+  comfortably above the NVMe, so it is near-free capacity on structured states
+  (a GHZ state is two nonzeros) and harmless on Haar-random ones, which are
+  incompressible.
 - **Step 42: episode scheduler** — compile the fused gate stream into chunk-local
   episodes split at global-bit barriers; route diagonal/phase gates on global bits
   into episodes (they need no cross-chunk pairing); skip writeback for read-only
@@ -196,14 +201,38 @@ single-machine A/B.
   shows zero regression. SSD-endurance note in the docs: an episode writes the full
   state (128 GiB at 34q), so deep unfused circuits are a TBW consideration —
   documented, not engineered around, in v0.4.
+- **Step 45: block-float `complex32` states** — opt-in half-precision amplitude
+  storage (`dtype="complex32"`): two float16s per amplitude plus one float32
+  max-magnitude scale per chunk. The per-chunk scale is load-bearing, not a nicety:
+  at 34q the typical amplitude magnitude is ~2⁻¹⁷ ≈ 8e-6, *below* float16's normal
+  range (6e-5), so naive fp16 lands in subnormals or underflows — block floating
+  point restores the range. A deterministic, circuit-independent 2× on every byte
+  count, and GPU-native (Metal and MLX both have first-class `half`), so chunks stay
+  compressed in unified memory too: it composes with spilling *and* raises the
+  in-RAM ceiling 33q → 34q (and the DM ceiling toward n=17) with no disk involved.
+  Cost: a 10-bit mantissa gives ~2⁻¹¹ relative rounding per gate pass, accumulating
+  roughly with √depth — fine for sampling and expectation values at moderate depth,
+  not for amplitude-level verification. Ship opt-in only; gate with the existing
+  differential tests against complex64 and publish a fidelity-vs-depth table.
 
-Considered and deferred: **on-disk chunk compression** (DuckDB compresses spilled
-blocks; statevector amplitudes of structured circuits compress extremely well — a GHZ
-state is two nonzeros — but random-circuit states are incompressible by Haar-typicality,
-so it only accelerates the easy cases) and a **general buffer pool with LRU eviction**
-(no selectivity in the access pattern — the streaming three-buffer pipeline is the
-whole pool). The multi-Mac item (v0.3) and this section share the index-bit
-partitioning compiler work; whichever ships first pays most of the cost of the second.
+Considered and deferred: **error-bounded lossy compression (SZ/ZFP)** — the
+strongest published precedent for compressed full-state simulation (Wu et al.,
+*Full-state quantum circuit simulation by using data compression*, SC'19,
+[arXiv:1810.14582](https://arxiv.org/abs/1810.14582), which kept the state
+compressed in memory, decompressing blocks on the fly, and reached a 61-qubit
+Grover), but a poor fit here for now: SZ/ZFP throughput is ~1-5 GB/s per CPU core
+(below the NVMe without multithreading or a Metal port — ZFP has CUDA kernels, no
+Metal), the error bound is consumed once per compress/decompress cycle and every
+chunk episode is a cycle, and the ratio evaporates on Haar-random states — exactly
+the circuits that need spilling most. Also deferred: **changed representations**
+(matrix product states, decision diagrams, sparse amplitude dictionaries) — these
+compress *structure* rather than bytes (MPS memory scales with bond dimension, not
+2ⁿ) and are the biggest capacity lever of all, but they are a different simulator,
+deserving their own roadmap line rather than a codec bullet under spill-to-disk;
+and a **general buffer pool with LRU eviction** (no selectivity in the access
+pattern — the streaming three-buffer pipeline is the whole pool). The multi-Mac
+item (v0.3) and this section share the index-bit partitioning compiler work;
+whichever ships first pays most of the cost of the second.
 
 ---
 
