@@ -63,3 +63,13 @@ See [Backends](backends.md) for the measurements behind these tiers, why the GPU
 loses below 16q, how circuit structure moves the MLX/Metal gap, and tuning tips.
 For parameter sweeps of many small circuits, see `BatchedSimulator` — it packs the
 whole sweep into batched array ops (up to 47× over a per-circuit loop).
+
+## Noise simulation
+
+Circuits accept Kraus-operator noise channels (`.depolarizing(q, p)`,
+`.amplitude_damping(q, gamma)`, …) and run on the `DensityMatrixSimulator`, which
+carries the density matrix as a vectorized 2n-qubit state over the same three
+backends. An n-qubit noisy simulation therefore costs what a 2n-qubit statevector
+costs — up to 15 qubits on MLX and 16 on Metal (a 32 GiB state). See
+[Getting Started](getting-started.md#simulating-noise) and the
+[API reference](reference/api.md#densitymatrixsimulatorbackendauto-dtypecomplex64-seednone).

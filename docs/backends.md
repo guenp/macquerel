@@ -130,7 +130,10 @@ half the bytes of MLX's double-buffering, and MLX additionally throttles its laz
    ~3× (tensordot copies), and MLX peaks up to ~20× on shallow circuits at 28q
    (double-buffering plus lazy-graph temporaries). If the working set approaches
    RAM, the OS swaps and runtimes fall off a cliff — that, not compute, is usually
-   what a "slow" 28q+ run is.
+   what a "slow" 28q+ run is. Density matrices double the qubit count: an n-qubit
+   `DensityMatrixSimulator` run is a 2n-qubit state (4ⁿ × 8 bytes), so the same
+   ceilings land at n=15 (MLX) and n=16 (Metal, 32 GiB) — the dashed series in
+   the memory chart.
 5. **Prefer nearest-neighbor structure** when you have the choice (see the QAOA
    section above).
 6. **Fusion width is already tuned per backend** — metal fuses up to 2 qubits ≤22q,

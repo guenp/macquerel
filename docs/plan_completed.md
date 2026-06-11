@@ -600,3 +600,45 @@ path; **cpu untouched**. Against the full two-line arc, the cumulative geomean
 vs the step20 baseline stands at **metal 2.85×, mlx 2.04×, cpu 1.63×**. The
 batched API turns small-circuit sweeps from a per-run-overhead problem into a
 single launch per gate position (up to 47× measured).
+
+## v0.3 — noise channels / density matrices
+
+> **Status: SHIPPED (2026-06-11), branch `feat/density-matrix-noise`.** The first
+> v0.3 feature: `DensityMatrixSimulator` with Kraus-operator channels.
+
+### `DensityMatrixSimulator` ✅
+
+The density matrix is carried as its **row-major vectorization** — a `4**n`
+complex64 array the existing statevector backends treat as an ordinary 2n-qubit
+state (ket axes `0..n-1`, bra axes `n..2n-1`). That single representational
+choice meant zero backend changes:
+
+- a unitary `rho -> U rho U^dagger` is two `apply_matrix` calls (U on the ket
+  axes, `conj(U)` on the bra axes; controls shift with their targets);
+- a Kraus channel `rho -> sum_k K_k rho K_k^dagger` is **one** dense
+  superoperator `sum_k K_k (x) conj(K_k)` applied to the channel's paired
+  ket+bra axes — a width-2q dense gate the backends already dispatch;
+- measurement probabilities are the diagonal `rho_ii`, the stride-`2**n + 1`
+  slice of the vectorization, read through a zero-copy host view on CPU/Metal
+  (no full-matrix readback); `purity` is one BLAS `vdot` over the same view.
+
+Channels live on the circuit (`Circuit.bit_flip/.phase_flip/.depolarizing/`
+`.amplitude_damping/.phase_damping/.kraus`, validated for completeness at build
+time) as `ChannelOp`s, which the fusion pass treats as barriers — gate runs
+between channels still fuse, with the width resolved at the doubled qubit count
+where the applies actually happen. The statevector `Simulator` and
+`BatchedSimulator` reject noisy circuits with a pointer to the DM simulator.
+
+**Memory**: an n-qubit density matrix costs exactly a 2n-qubit statevector, so
+the backend ceilings land at n=15 (MLX, int32 ShapeElem at 2n=30) and n=16
+(Metal, 32 GiB). Measured (`bench_memory.py --series dm`): metal stays on the
+theoretical `4**N x 8 B` line (32.2 GiB at N=16), cpu peaks ~3x, mlx ~16-25x —
+the same multipliers as the statevector series at the doubled count. Runtime
+(`bench_density.py`): crossovers mirror the statevector tiers — cpu wins
+through N~6-7, metal everywhere above (noisy GHZ@16 in 6.0 s, random@16 8.5 s).
+
+**Correctness**: differential-tested against a direct dense `rho` reference on
+random noisy circuits, against `Simulator` on noiseless circuits
+(`rho == |psi><psi|`), and against analytic channel formulas; physicality
+(trace, hermiticity, positivity, purity decay) holds across all three backends
+(`tests/test_density.py`, `tests/test_noise.py`).

@@ -31,15 +31,15 @@ notes.
 
 ## v0.3
 
-- **Noise channels / density matrices** — `DensityMatrixSimulator` with Kraus-operator
-  channels.
 - **Memory-mapped out-of-core backend** — state vector backed by an NVMe file via
   `np.memmap`, for single large runs past DRAM capacity.
 - **Multi-Mac over Thunderbolt** — distributed state vector using index-bit partitioning
   across machines.
 
 > `BatchedSimulator` (batched small-circuit simulation) shipped early as Step 31 of the
-> v0.2.x+ line — see [`plan_completed.md`](plan_completed.md).
+> v0.2.x+ line, and **Noise channels / density matrices** (`DensityMatrixSimulator`
+> with Kraus-operator channels) shipped as the first v0.3 feature — see
+> [`plan_completed.md`](plan_completed.md).
 
 ---
 

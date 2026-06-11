@@ -5,6 +5,25 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Added
+
+- Add `DensityMatrixSimulator`: noisy circuit simulation over the vectorized density
+  matrix (a `4**n` doubled statevector), reusing the CPU/MLX/Metal backends unchanged —
+  unitaries apply to the ket and bra axes, Kraus channels as one dense superoperator per
+  channel. API: `density_matrix`, `probabilities` (diagonal-only readback), `run`,
+  `expectation_pauli`, `purity`. Auto backend selection at the doubled qubit count;
+  ceilings at 15 qubits (MLX) and 16 qubits (Metal, a 32 GiB state).
+- Add Kraus-operator noise channels on `Circuit`: `bit_flip`, `phase_flip`,
+  `depolarizing`, `amplitude_damping`, `phase_damping`, and arbitrary (multi-qubit)
+  channels via `kraus(qubits, operators)`, validated for trace preservation at build
+  time. Channels act as gate-fusion barriers; the statevector `Simulator` and
+  `BatchedSimulator` reject noisy circuits with a pointer to `DensityMatrixSimulator`.
+- Add `benchmarks/bench_density.py` (runtime across backends/qubit counts on noisy GHZ
+  and random-brickwork circuits) and a density-matrix series in
+  `benchmarks/bench_memory.py`; both budget-gate cells at min(0.45 × RAM, 64 GiB).
+  Measured: Metal stays on the theoretical `4**N × 8 B` line (32.2 GiB at N=16) and
+  runs a noisy 16-qubit GHZ in 6.0 s.
+
 ## [0.2.2] - 2026-06-11
 
 ### Added

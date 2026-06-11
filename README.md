@@ -11,6 +11,9 @@ A quantum state-vector simulator targeting Apple Silicon's unified-memory archit
 - **Gate fusion compiler** — greedy left-to-right fusion of adjacent gates (up to 4 qubits) into composite unitaries
 - **Gate classification** — automatically classifies gates as `diagonal`, `permutation`, or `dense` for optimized dispatch
 - **Full gate library** — I, H, X, Y, Z, S, T, Rx, Ry, Rz, P, CNOT, CZ, SWAP, CP
+- **Noise channels / density matrices** — Kraus-operator channels (bit/phase flip,
+  depolarizing, amplitude/phase damping, arbitrary) on a `DensityMatrixSimulator`
+  that runs the vectorized density matrix over the same backends
 
 ## Installation
 
@@ -52,6 +55,18 @@ print(sv)  # [0.707+0j, 0+0j, 0+0j, 0.707+0j]
 ```python
 # Apple Silicon GPU backend
 sim = Simulator(backend="mlx")
+```
+
+```python
+# Noisy simulation: Kraus channels + density matrix
+from macquerel import DensityMatrixSimulator
+
+circuit = Circuit(2)
+circuit.h(0).cx(0, 1).depolarizing(0, 0.05).measure_all()
+
+dm = DensityMatrixSimulator()
+counts = dm.run(circuit, shots=1000)   # noisy counts with 01/10 leakage
+rho = dm.density_matrix(circuit)       # full (2**n, 2**n) density matrix
 ```
 
 ### Available gates
