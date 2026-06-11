@@ -642,3 +642,43 @@ random noisy circuits, against `Simulator` on noiseless circuits
 (`rho == |psi><psi|`), and against analytic channel formulas; physicality
 (trace, hermiticity, positivity, purity decay) holds across all three backends
 (`tests/test_density.py`, `tests/test_noise.py`).
+
+## v0.3.x — RAM usage candidates (Steps 36-40)
+
+> In progress on branch `perf/v0.3.x-ram`; remaining steps tracked in
+> [`plan.md`](plan.md).
+
+### Step 36: MLX monomial kernel + eval cadence + pool release ✅ (`3decb13`) — peaks 19-25× → 3-5×, ghz@24-28 6.5-7.9× faster
+
+The measured 19-25× MLX memory peaks were mostly **not** the eval cadence: the
+monomial gather path built its source-index table on-device out of ~5 full-width
+uint32 lazy-graph intermediates per fused permutation gate — a 28q GHZ held
+10-12 GiB live for a 2 GiB state, and the lazy graph keeps every index
+temporary alive until evaluation. Three changes landed together:
+
+- **Register-resident monomial kernel** (the Step 33 design applied to
+  generalized permutations): one thread owns a group, computes its indices in
+  registers, reads the group through the gate's row permutation, and applies
+  the per-row phase — the only full-width buffers are the input and output
+  state. The on-device gather path remains the k>6 fallback.
+- **Tight eval cadence with backpressure** above 26 effective qubits:
+  `async_eval` every 2 gates (was 16), blocking on the checkpoint from one
+  interval ago before kicking the next. The blocking half matters because
+  `async_eval` alone never blocks — a shallow circuit encodes its whole graph
+  before the GPU retires anything, keeping every intermediate live regardless
+  of cadence (measured: cadence alone only halved the peaks).
+- **Pool release at observation boundaries**, gated on the freed-buffer pool
+  exceeding ⅛ of unified memory; smaller pools stay warm. (An unconditional
+  clear cost qaoa@24q 2.4× in re-allocation; a 1 GiB threshold still paid it.)
+
+A/B (GHZ memory cells vs `benchmarks/data/memory.json` baseline): sv peaks drop
+3.5-3.8× — 28q 39.2 → 10.2 GiB (19.6× → 5.1× theory), 26q 9.15 → 2.65 GiB —
+and dm n=14 49.2 → 8.15 GiB. Newly fitting cells: sv 29q/30q at **3.0×**
+(12.1/24.2 GiB; 30q previously drove the machine into swap at ~16×) and the
+previously-skipped dm n=15 (32.2 GiB), both un-skipped by recalibrating
+`_PEAK_MULT` (mlx 16.0 → 6.0). Runtime improved in every measured cell
+(`benchmarks/data/steps/step36-baseline-0c4c9dc-mlx.json` vs
+`step36-3decb13-mlx.json`): ghz@24-28 6.5-7.9×, qft 2.1-2.6×, random 1.2-1.8×,
+qaoa par-1.09×. Buffer-donation audit: `MLXState` and the simulator hot path
+hold no extra state references; the per-n arange cache and the pending-eval
+checkpoint (cleared at boundaries) are the only retained arrays.

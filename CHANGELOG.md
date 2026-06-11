@@ -5,6 +5,17 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Cut MLX peak memory from 19-25x to 3-5x of the state size (Step 36): monomial
+  (permutation) gates now use a register-resident group-per-thread Metal kernel
+  instead of materializing full-width gather-index intermediates in the lazy graph;
+  the async-eval cadence tightens to every 2 gates with two-deep backpressure above
+  26 effective qubits; and observation boundaries return the buffer pool to the OS
+  when it exceeds an eighth of unified memory. MLX now reaches 29-30q statevectors
+  and 15-qubit density matrices without swap, and every measured runtime cell
+  improved (GHZ@24-28q 6.5-7.9x, QFT 2.1-2.6x, random 1.2-1.8x).
+
 ### Added
 
 - Add `DensityMatrixSimulator`: noisy circuit simulation over the vectorized density

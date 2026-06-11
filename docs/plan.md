@@ -49,19 +49,14 @@ notes.
 
 Measured peak-to-theory multipliers (`benchmarks/data/memory.json`, GHZ cells ≥256 MiB,
 statevector and density-matrix series agree): **metal 1.0×** (in-place — nothing left to
-win), **cpu 3.0×**, **mlx 19-25×**. Candidates in priority order; each follows the A/B
-protocol (correctness gate first, then peak footprint *and* runtime measured per cell,
-since most of these trade one for the other).
+win), **cpu 3.0×**, **mlx 3-5×** (was 19-25× before Step 36). Candidates in priority
+order; each follows the A/B protocol (correctness gate first, then peak footprint *and*
+runtime measured per cell, since most of these trade one for the other).
 
-- **Step 36: MLX eval cadence + pool release** — the 19-25× peak is the lazy graph
-  holding up to 16 double-buffered full-width intermediates between `async_eval` kicks
-  (`_ASYNC_EVAL_INTERVAL = 16`) plus a buffer pool that never returns memory to the OS.
-  Shrink the interval as the state grows (e.g. every 2-4 gates above ~26 effective
-  qubits), call `mx.clear_cache()` at observation boundaries, and verify buffer donation
-  (MLX reuses an input buffer at refcount 1 — check `MLXState` holds no extra refs).
-  Target: the ~2-3× double-buffer floor, which un-skips the mlx DM n=15 cell (currently
-  estimated 128 GiB) and reaches 29-30q statevectors without swap. Re-run the Step 24
-  A/B: cadence trades memory against pipeline fullness.
+> **Step 36 (MLX monomial kernel + eval cadence + pool release) shipped** as
+> `3decb13` — peaks 19-25× → 3-5×, every runtime cell improved, mlx sv 29-30q and
+> dm n=15 un-skipped; see [`plan_completed.md`](plan_completed.md).
+
 - **Step 37: quantum-trajectory simulator** — Monte-Carlo wavefunction: K stochastic
   *statevector* trajectories, sampling one Kraus operator per channel per trajectory
   (probability `||K_k psi||^2`, then renormalize). Memory `2**n` per trajectory, run
