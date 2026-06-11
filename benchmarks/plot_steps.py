@@ -26,7 +26,11 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
-# Execution order of the plan (docs/plan.md): step 24 lands before step 23.
+# Execution order of the plan (docs/plan.md): step 24 lands before step 23;
+# the v0.2.x+ candidate line (steps 32-34) re-baselined at the 0.2.1 release
+# commit ("step32-baseline") and runs 32 -> 33 -> 34. Steps 31/35 are not here:
+# 31 (BatchedSimulator) has its own harness (bench_batched.py) and 35 is
+# routing-only, which this benchmark pins away.
 STEP_ORDER = [
     "step20-baseline",
     "step21",
@@ -38,6 +42,10 @@ STEP_ORDER = [
     "step27",
     "step28",
     "step30",
+    "step32-baseline",
+    "step32",
+    "step33",
+    "step34",
 ]
 
 BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal"]

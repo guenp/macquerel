@@ -1,4 +1,4 @@
-# GPU-perf plan: per-step benchmark data (docs/plan.md Steps 21–30)
+# GPU-perf plan: per-step benchmark data (docs/plan.md Steps 21–30 and 31–35)
 
 One JSON per `(step, backend)` written by `benchmarks/run_step_bench.sh`, named
 `<step>-<commit>-<backend>.json`. Each step was benchmarked in an isolated git
@@ -11,7 +11,9 @@ touched (untouched backends carry forward). `benchmarks/plot_steps.py` renders:
 
 Steps appear in **execution order**: 21 → 22 → 24 → 23 → 25 → 26 → 27 → 28 → 30
 (24 was moved before 23 after review, so the memory-cliff fix wouldn't confound
-23's large-n A/B; 30 landed after the line shipped). All numbers: M5 Max,
+23's large-n A/B; 30 landed after the line shipped), then the v0.2.x+ candidate
+line re-baselined at the 0.2.1 release commit (`step32-baseline`, a no-change
+control vs step30: 0.99–1.00×) and ran 32 → 33 → 34. All numbers: M5 Max,
 128 GB, macOS, MLX 0.31.2, min of 3 reps, subprocess-isolated cells.
 
 ## Per-step results and why
@@ -127,3 +129,76 @@ landed at ~20q; G3 (28q cliff) gone; G4 (auto picks measured-fastest)
 re-tuned to CPU ≤16q / Metal ≥17q; G1 holds for the system (Metal tier)
 everywhere ≥20q, with MLX itself still behind Aer only on QFT at 24q+.
 Step 29 (custom MLX dense kernel) was not needed.
+
+## v0.2.x+ candidate line (Steps 31–35)
+
+**Step 32 (`fef6417`) — MLX broadcast diagonal path. mlx 1.20× geomean;
+qft@22–28 2.5–4.3×.** The diagonal path built a full-width gather table —
+k shift/or passes over a 2^n uint32 index plus a full-width phase gather —
+before the actual multiply. It is now a single broadcast elementwise multiply:
+the state is viewed with one length-2 axis per target qubit (gaps between
+targets collapsed, so the view stays ≤2k+1-dimensional at any n) and the
+(2,)*k diagonal broadcasts across the rest. This was the plan's "in-place-style
+diagonal path" candidate, aimed at exactly the wide-diagonal QFT cells where
+MLX trailed Metal 6–10×: qft@28 9.08→2.12 s, qaoa@28 2.4×, everything else
+flat within the documented GPU clock variance.
+
+**Step 33 (`4fff625`) — custom MLX dense kernel (`mx.fast.metal_kernel`).
+mlx 1.09× geomean; random@22–28 1.16–1.61×, qaoa@24–26 1.3–1.6×.** Dense and
+controlled gates now run the same group-per-thread kernel design as the native
+Metal backend (Step 25), generated per (gate width, control count) so the
+per-group loops unroll, instead of `mx.tensordot` — whose internal input
+permutation was the dominant cost on scattered-target circuits (the half Step
+23 couldn't remove). MLX kernel inputs are `const device` (issue #2547), so the
+result is double-buffered like every other MLX path; tensordot remains the
+fallback for k>6 gates that fusion never emits. This was the deferred Step 29:
+it matters for the no-PyObjC fallback tier, and it closes most of MLX's
+remaining random-circuit gap — cumulative with Step 32, mlx is 1.3× geomean
+and 2.2× at 28q vs the 0.2.1 baseline (qft@28 4.5×).
+
+**Step 34 (`4e05d01`) — Metal small-n floor. metal 1.07× geomean; 1.6–1.8× on
+ghz@24–26; init 7.5 ms → 30 µs.** Three fixed costs went away: (a) the device,
+command queue, and per-k compiled pipelines are now process-wide, so
+constructing a `MetalBackend` — which `backend="auto"` used to do on *every*
+call — drops from ~7.5 ms (runtime shader compile) to ~30 µs, and the
+Simulator now also reuses backend instances across auto-mode calls (seeded
+simulators keep fresh-per-call backends for bit-identical reruns); (b) state
+buffers are recycled through a size-keyed pool (in-flight buffers are parked
+until the next flush), which is where the 24–26q wins come from — re-touching
+warm pages instead of faulting fresh ones; (c) redundant per-dispatch
+`setBuffer`/`setBytes` ObjC calls are skipped. Apparent small-n regressions in
+the min-of-3 A/B did not reproduce at reps=9 (ghz@12 is 1.31→0.86 ms, a win;
+the original baseline cell was a lucky-fast outlier).
+
+**Step 35 (`800691d`) — per-chip backend-tier autotuning; default CPU tier
+15q.** Routing-only (the pinned-backend benchmarks here cannot see it).
+`MACQUEREL_BACKEND_TIERS=<int>` pins the CPU tier's max qubit count; `auto`
+measures the CPU/GPU crossover once (QFT + brickwork random on both backends
+across 10–20q, requiring the GPU to win *sustainably*) and caches it to
+`~/.cache/macquerel/backend_tiers.json`, mirroring `MACQUEREL_FUSION_WIDTH`.
+The default boundary moved 16 → 15: after Step 34, Metal wins qft/random/qaoa
+at 16q (qft 5.6 ms vs cpu 9.2 ms) and the autotuner independently measures
+cpu_max=15 on this chip (0.7 s, one-time).
+
+**Step 31 (`9b00708`) — BatchedSimulator.** Not in these JSONs — the
+statevector harness times one circuit at a time, and the batched API's whole
+point is amortizing across a sweep. Its own harness (`bench_batched.py`,
+`benchmarks/data/batched.json`; VQE-style ansatz sweeps) measures the batched
+evolution vs a per-circuit `Simulator` loop: **26–47× at 4q, 20–45× at 8q,
+14–23× at 12q, 2.2× at 16q**. Two findings shaped it: per-circuit gate fusion
+was 99% of a fused prototype's runtime (batching already amortizes dispatch,
+so the batched path skips fusion entirely), and the engine crossover tracks
+total problem size, so `auto` routes on log2(B)+n against the Step 35 tier
+boundary — which picks the faster engine in every measured cell.
+
+### Cumulative result (Step 34 state vs the 0.2.1 baseline, this line only)
+
+| backend | 6q | 12q | 16q | 20q | 22q | 24q | 26q | 28q | best single cell |
+|---|---|---|---|---|---|---|---|---|---|
+| mlx | 0.99× | 0.97× | 0.97× | 1.06× | 1.32× | 1.61× | 1.83× | 2.16× | qft@28 **4.5×** |
+| metal | 0.96× | 0.90× | 1.01× | 1.06× | 1.11× | 1.25× | 1.32× | 1.04× | ghz@26 1.8× |
+
+(cpu untouched this line: 1.00×. The sub-1.0 small-n metal/mlx cells are
+single noisy min-of-3 cells — the reps=9 recheck above puts them at parity or
+better.) Against the full arc, the cumulative geomean vs the *step20* baseline
+now stands at **metal 2.85×, mlx 2.04×, cpu 1.63×** (`plot_steps.py` table).
