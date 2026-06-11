@@ -176,6 +176,55 @@ The driver layer is where Metal's overheads get engineered away:
 The result is a backend that is fastest *everywhere* ≥ 16 qubits, not just past
 MLX's ceiling — see [the measurements](../backends.md#who-wins-where).
 
+## How many GPUs? One — the question is how full it gets
+
+A point worth making explicit, because "MLX vs Metal" can sound like different
+hardware: **every simulation in this library runs on at most one GPU.** Apple Silicon
+has a single integrated GPU on the same die as the CPU (the M5 Max benchmark machine:
+40 GPU cores behind one unified-memory controller); there is no multi-GPU
+configuration to enumerate. MLX and the Metal backend are two *software* paths to the
+same physical device — `MTLCreateSystemDefaultDevice` returns the one GPU either way
+— and the CPU backend never touches it at all.
+
+What actually varies with qubit count is **occupancy**: how much of that one GPU a
+dispatch can fill. A k-qubit gate launches one thread per group, 2ⁿ⁻ᵏ threads total,
+and a GPU with thousands of ALUs needs *tens of thousands* of threads in flight to
+hide memory latency:
+
+```text
+                 threads per dense-4 gate     one 40-core GPU
+ n = 12               2⁸  =   256             starved — most cores idle, and the
+                                              launch overhead dwarfs the work
+ n = 20               2¹⁶ =  65 536           roughly at the latency-hiding knee
+ n = 30               2²⁶ ≈  67 M             saturated — bandwidth-bound, the
+                                              regime the backends are built for
+```
+
+This is the hardware face of the [small-n story](../backends.md#why-metal-trails-at-low-qubit-counts):
+below ~16 qubits the GPU isn't slow, it's *empty*, and auto-select keeps those
+circuits on the CPU. The memory benchmark measures this directly — while each cell
+runs, it samples the GPU's device-wide busy-percent from the IORegistry (the same
+counter Activity Monitor plots). The utilization panel of the chart below shows the
+measured curve (GHZ cells, M5 Max):
+
+- **cpu** cells never leave the idle baseline (0–20% of display compositing and
+  desktop noise, at every qubit count) — the CPU backend genuinely uses no GPU;
+- **mlx** breaks from the baseline at 22 qubits (49%) and pins the GPU at 100%
+  from 24 qubits on;
+- **metal** breaks out around 25 qubits (54%) and saturates from 29 qubits;
+- **density-matrix** cells, being doubled states, saturate at tiny qubit counts:
+  100% from n=13 (a 26-qubit state) on Metal.
+
+That Metal "lags" MLX here is not slowness — it is the same circuit finished with
+far less GPU work. Busy-percent is a *duty cycle* over the whole cell (including
+Python startup and encode time), and Metal's in-place kernels move roughly half the
+bytes of MLX's double-buffered graph, so its GPU phase is simply shorter until the
+state gets huge. Device-wide busy-percent is a duty-cycle measure, not a per-core
+occupancy probe, but on an otherwise idle machine it cleanly separates "the GPU
+barely woke up" from "the GPU is the bottleneck".
+
+![Memory footprint and GPU utilization by backend and qubit count](../assets/memory.png)
+
 ## Memory at a glance
 
 Peak resident memory, measured by `benchmarks/bench_memory.py` against the
