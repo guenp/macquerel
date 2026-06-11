@@ -68,7 +68,9 @@ depth-50 random circuit at 6q pays only 1.19× (6.99 vs 5.89 ms). Second, it van
 as the state grows — gate work doubles per added qubit while the overhead stays
 constant, and the lines cross at 12–16q depending on the circuit (see the relative
 chart below). That measured crossover is exactly why auto-select keeps CPU through
-16q: you get the best of both without thinking about it.
+15q: you get the best of both without thinking about it. (The boundary is a chip
+property — `MACQUEREL_BACKEND_TIERS=auto` re-measures and caches it for *your*
+chip, mirroring the fusion-width autotuner.)
 
 ## Circuit structure matters: why QAOA is MLX's best circuit
 
@@ -110,10 +112,11 @@ half the bytes of MLX's double-buffering, and MLX additionally throttles its laz
 
 ## Getting the best performance
 
-1. **Leave `backend="auto"`.** The tiers (CPU ≤16q, Metal ≥17q) are measured on real
+1. **Leave `backend="auto"`.** The tiers (CPU ≤15q, Metal ≥16q) are measured on real
    circuits; forcing a GPU backend on a 10q circuit costs you 1.2–2×, and forcing CPU
-   at 24q costs 10–28×. Install the Metal extra if you simulate beyond 16q — MLX is a
-   fine fallback but never faster.
+   at 24q costs 10–28×. Install the Metal extra if you simulate beyond 15q — MLX is a
+   fine fallback. (`MACQUEREL_BACKEND_TIERS=<int>` pins the boundary, `=auto`
+   measures it once for your chip and caches it.)
 2. **Stay in `complex64`** (the default) unless you genuinely need double precision:
    all backends are bandwidth-bound at scale, so `complex128` roughly halves
    throughput and doubles memory.
@@ -121,9 +124,13 @@ half the bytes of MLX's double-buffering, and MLX additionally throttles its laz
    forces the GPU to synchronize and flush (Metal commits its batched command buffer;
    MLX evaluates its lazy graph). Build the full circuit, then observe once.
 4. **Mind the memory budget.** A state is 2ⁿ × 8 bytes (complex64): 8 GiB at 30q,
-   32 GiB at 32q, 64 GiB at 33q. Metal needs ~1× that (in-place); MLX ~2× plus graph
-   temporaries. If the working set approaches RAM, the OS swaps and runtimes fall off
-   a cliff — that, not compute, is usually what a "slow" 28q+ run is.
+   32 GiB at 32q, 64 GiB at 33q. Measured peak footprints (`bench_memory.py`,
+   `benchmarks/data/memory.png`): Metal sits *on* the theoretical line (32.2 GiB
+   at 32q — genuinely in-place, +150 MB runtime baseline), the CPU backend peaks
+   ~3× (tensordot copies), and MLX peaks up to ~20× on shallow circuits at 28q
+   (double-buffering plus lazy-graph temporaries). If the working set approaches
+   RAM, the OS swaps and runtimes fall off a cliff — that, not compute, is usually
+   what a "slow" 28q+ run is.
 5. **Prefer nearest-neighbor structure** when you have the choice (see the QAOA
    section above).
 6. **Fusion width is already tuned per backend** — metal fuses up to 2 qubits ≤22q,
@@ -139,9 +146,12 @@ half the bytes of MLX's double-buffering, and MLX additionally throttles its laz
 
 ## Future optimizations
 
-The optimization candidates that came out of this comparison — batched
-small-circuit simulation, a custom MLX dense kernel, an in-place-style MLX diagonal
-path, lowering Metal's small-n floor, per-chip tier autotuning — are tracked in
-[the implementation plan](plan.md) under *v0.2.x+ — performance candidates*,
-alongside the v0.3 capacity work (out-of-core states past 33q, multi-Mac
-distribution over Thunderbolt).
+The five optimization candidates that came out of this comparison — batched
+small-circuit simulation (`BatchedSimulator`, up to 47× on parameter sweeps), a
+custom MLX dense kernel, the broadcast MLX diagonal path (qft@28 4.5×), lowering
+Metal's small-n floor, and per-chip tier autotuning — have all **shipped** as
+Steps 31–35; see [the completed plan](plan_completed.md) for commits and measured
+A/B results. (The QFT/random numbers above predate that line: the MLX QFT gap
+quoted here has since closed from 6.2×/9.5× to ~1.6×/2.2×.) Remaining work is the
+v0.3 capacity line (noise channels, out-of-core states past 33q, multi-Mac
+distribution over Thunderbolt) — see [the implementation plan](plan.md).

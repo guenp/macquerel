@@ -5,6 +5,28 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Added
+
+- Add `BatchedSimulator` (Step 31): parameter sweeps of same-width circuits run as one
+  batched evolution — one batched matmul per gate position instead of one run per
+  circuit — with NumPy and MLX engines and automatic engine routing. Measured 2-47x
+  over a per-circuit loop on VQE-style sweeps (`benchmarks/bench_batched.py`).
+- Add a custom MLX dense-gate kernel via `mx.fast.metal_kernel` (Step 33), replacing
+  `mx.tensordot`'s internally-permuting dense path with the Metal backend's
+  group-per-thread design: random@22-28q 1.16-1.61x.
+- Add opt-in per-chip backend-tier autotuning (Step 35): `MACQUEREL_BACKEND_TIERS=<int>`
+  pins the CPU tier boundary, `=auto` measures the CPU/GPU crossover once and caches it.
+
+### Changed
+
+- Replace the MLX diagonal gather-table path with a broadcast elementwise phase multiply
+  (Step 32): qft@22-28q 2.5-4.3x, closing most of the MLX/Metal QFT gap.
+- Lower the Metal small-n floor (Step 34): process-wide shared device/queue/pipelines
+  (backend construction 7.5 ms -> 30 us), pooled state-buffer allocation, fewer
+  per-dispatch ObjC calls, and backend-instance reuse on the `auto` path.
+- Retune automatic backend selection to CPU through 15 qubits (was 16): after Step 34,
+  Metal wins three of the four benchmark circuits at 16q.
+
 ## [0.2.1] - 2026-06-11
 
 ### Added

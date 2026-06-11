@@ -30,9 +30,9 @@ print(counts)  # Counter({'00': ~500, '11': ~500})
 
 | Backend | Range | Notes |
 |---|---|---|
-| CPU (NumPy) | ≤16q | Reference implementation |
-| Metal | 17–33q | PyObjC kernels, 64-bit indexing, in-place |
-| MLX | 17–30q | Apple Silicon GPU; fallback when Metal is unavailable |
+| CPU (NumPy) | ≤15q | Reference implementation |
+| Metal | 16–33q | PyObjC kernels, 64-bit indexing, in-place |
+| MLX | 16–30q | Apple Silicon GPU; fallback when Metal is unavailable |
 
 `Simulator()` selects automatically by qubit count; pass `backend="cpu" / "mlx" / "metal"`
 to force one.
@@ -44,12 +44,12 @@ Metal backend can allocate the state.*
 
 Each backend wins a different regime:
 
-- **CPU (NumPy)** — the portable reference. Fastest at **≤16q**, where the state
+- **CPU (NumPy)** — the portable reference. Fastest at **≤15q**, where the state
   vector is only a few MB and per-gate GPU dispatch latency would dominate. Time and
   memory become impractical beyond ~24q. *Pro:* runs anywhere, no GPU. *Con:* doesn't
   scale.
 - **Metal** — custom PyObjC kernels with 64-bit indexing and genuine in-place updates.
-  The fastest backend **everywhere ≥17q** (batched command buffers and specialized
+  The fastest backend **everywhere ≥16q** (batched command buffers and specialized
   kernels removed the per-gate sync that used to hold it back at mid sizes), and the
   **only** one past 30q, reaching **31–33q** (16/32/64 GiB states) at ~2× per added
   qubit — the bandwidth-bound ideal. At 24q it beats CPU by up to **28×**.
@@ -61,3 +61,5 @@ Each backend wins a different regime:
 
 See [Backends](backends.md) for the measurements behind these tiers, why the GPU
 loses below 16q, how circuit structure moves the MLX/Metal gap, and tuning tips.
+For parameter sweeps of many small circuits, see `BatchedSimulator` — it packs the
+whole sweep into batched array ops (up to 47× over a per-circuit loop).

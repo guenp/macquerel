@@ -513,3 +513,90 @@ faster at 24q+ (random@24 99 ms vs 914 ms). The release-regression harness
 (28q cliff) and G4 (auto picks measured-fastest) met; G2 (Metal crossover) moved from
 ≥22q to ~20q; G1 met at the system level (Metal tier), with MLX itself still behind
 Aer only on QFT at 24q+.
+
+---
+
+## v0.2.x+ — performance candidates (Steps 31-35)
+
+> **Status: SHIPPED (2026-06-10), branch `perf-candidates`.** The five measured
+> candidates that came out of the backend comparison ([`backends.md`](backends.md)),
+> each A/B-benchmarked per the protocol: re-baselined at the 0.2.1 release commit
+> (`step32-baseline`, a 0.99-1.00× no-change control vs Step 30), per-step JSONs in
+> `benchmarks/data/steps/`, full write-ups in `benchmarks/data/steps/README.md`.
+> Execution order was 32 → 33 → 34 → 35 → 31.
+
+### Step 32: MLX broadcast diagonal path ✅ (`fef6417`) — mlx 1.20× geomean, qft@22-28 2.5-4.3×
+
+The diagonal path built a full-width gather table (k shift/or passes to build a
+2^n gate-row index, plus a full-width phase gather) before the multiply. Replaced
+with a single broadcast elementwise multiply: the state viewed with one length-2
+axis per target qubit (gaps collapsed, so the view stays ≤2k+1-dimensional) times
+the (2,)*k diagonal. This was the "in-place-style diagonal path" candidate aimed
+at the wide-diagonal QFT cells where MLX trailed Metal 6-10×: qft@28 9.08→2.12 s,
+qaoa@28 2.4×; everything else flat within GPU clock variance.
+
+### Step 33: custom MLX dense kernel via `mx.fast.metal_kernel` ✅ (`4fff625`) — mlx 1.09× geomean, random@22-28 1.16-1.61×
+
+The deferred Step 29. Dense/controlled gates now use the native Metal backend's
+group-per-thread kernel design (Step 25), with gate width and control count baked
+into per-(k, nc) generated source so the loops unroll — bypassing `mx.tensordot`'s
+internal input permutation, the dominant cost on scattered-target circuits and the
+half that Step 23's axis-order tracking could not remove. MLX kernel inputs are
+`const device` (issue #2547), so the result double-buffers; tensordot remains the
+k>6 fallback (fusion never emits those). Matters for the no-PyObjC fallback tier.
+Cumulative with Step 32: mlx 1.30× geomean, 2.16× at 28q vs the 0.2.1 baseline.
+
+### Step 34: lower the Metal small-n floor ✅ (`4e05d01`) — metal 1.07× geomean, ghz@24-26 1.6-1.8×, init 7.5 ms → 30 µs
+
+(a) Device, command queue, and per-k compiled pipelines are process-wide;
+`MetalBackend()` construction — paid on every `backend="auto"` call — drops from
+~7.5 ms to ~30 µs, and the Simulator now reuses backend instances across
+auto-mode calls (seeded simulators keep fresh-per-call backends so reruns stay
+bit-identical). (b) State buffers recycle through a size-keyed per-backend pool;
+buffers whose state dies while the open command buffer may still reference them
+are parked until the next flush. (c) Redundant per-dispatch `setBuffer`/`setBytes`
+ObjC calls are skipped. Apparent small-n regressions in the min-of-3 A/B did not
+reproduce at reps=9 (ghz@12 1.31→0.86 ms, a win — the baseline cell was a
+lucky-fast outlier).
+
+### Step 35: per-chip backend-tier autotuning; CPU tier default 16 → 15 ✅ (`800691d`)
+
+The CPU/GPU crossover is a chip property (the old 16q constant was measured on an
+M5 Max). Mirroring the fusion-width pattern: `MACQUEREL_BACKEND_TIERS=<int>` pins
+the CPU tier's max qubit count; `auto` measures the crossover once (QFT +
+brickwork random on both backends across 10-20q, requiring the GPU to win
+*sustainably*, not at one lucky count) and caches to
+`~/.cache/macquerel/backend_tiers.json`; failures fall back to the default and
+the zero-config path never measures. The default moved to 15: after Step 34,
+Metal wins qft/random/qaoa at 16q (qft 5.6 ms vs cpu 9.2 ms) and the autotuner
+independently measures cpu_max=15 on this chip.
+
+### Step 31: `BatchedSimulator` ✅ (`9b00708`) — 26-47× at 4q, 20-45× at 8q, 14-23× at 12q, 2.2× at 16q vs a per-circuit loop
+
+The v0.3 batched small-circuit feature, pulled forward. The small-n regime is
+dispatch-bound, so a B-circuit parameter sweep run one circuit at a time pays the
+fixed per-run costs B times. `BatchedSimulator` groups the batch by structure
+signature (gate positions/targets/controls) and evolves each group as one
+(B, 2^n) tensor: one batched matmul per gate position — or one broadcast phase
+multiply when every circuit's matrix there is diagonal — with controlled gates
+lifted to plain unitaries on controls+targets. Engines: NumPy and MLX (lazy
+graph; the whole batched circuit evaluates in a few fused kernels); `auto`
+routes on total size log2(B)+n against the Step 35 tier boundary, which picks
+the faster engine in every measured cell (`benchmarks/data/batched.json`).
+Design findings: per-circuit gate fusion was **99% of a fused prototype's
+runtime** — batching already amortizes dispatch, so the batched path skips
+fusion entirely; and `run()` requires explicit MeasureOps (no implicit
+measure-all), keeping batched semantics unambiguous. Differential-tested against
+the per-circuit Simulator on parameter sweeps, mixed-structure batches,
+controlled/diagonal gates, and sampling distributions (`tests/test_batched.py`).
+
+### Net result
+
+Cumulative over the line (vs 0.2.1 baseline, geomean over ghz/qft/random/qaoa):
+**mlx 1.30× overall, growing to 2.16× at 28q** (best cell qft@28 4.5×) — the MLX
+fallback tier no longer has a pathological QFT gap; **metal 1.07× overall**
+concentrated at 20-26q plus the 250× construction-cost removal on the auto
+path; **cpu untouched**. Against the full two-line arc, the cumulative geomean
+vs the step20 baseline stands at **metal 2.85×, mlx 2.04×, cpu 1.63×**. The
+batched API turns small-circuit sweeps from a per-run-overhead problem into a
+single launch per gate position (up to 47× measured).

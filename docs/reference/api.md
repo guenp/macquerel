@@ -31,8 +31,9 @@ circuit.h(0).cx(0, 1).measure_all()
 ## `Simulator(backend="auto", dtype="complex64", seed=None)`
 
 Runs circuits. `backend` is one of `"auto"`, `"cpu"`, `"mlx"`, `"metal"`; `"auto"`
-selects by qubit count (CPU ≤16q, MLX 17–30q, Metal 31q+). `seed` makes sampling
-reproducible.
+selects by qubit count (CPU ≤15q, Metal 16q+, with MLX serving 16–30q when Metal is
+unavailable; `MACQUEREL_BACKEND_TIERS` pins or autotunes the boundary). `seed` makes
+sampling reproducible.
 
 ### `statevector(circuit) -> numpy.ndarray`
 
@@ -49,6 +50,30 @@ Sample measurement outcomes, returning a `Counter` mapping bitstrings to counts.
 
 ```python
 counts = sim.run(circuit, shots=1000)
+```
+
+## `BatchedSimulator(backend="auto", dtype="complex64", seed=None)`
+
+Simulates many same-width circuits as one batched evolution — built for parameter
+sweeps (VQE/QML), where running B small circuits one at a time pays the fixed
+per-run costs B times. Circuits sharing a structure (same gate positions, targets,
+controls) are evolved together as one `(B, 2**n)` tensor, one batched matmul per
+gate position; mixed-structure batches are grouped automatically. `backend` is one
+of `"auto"`, `"cpu"`, `"mlx"` (`"auto"` routes on the total size `log2(B) + n`).
+
+### `statevectors(circuits) -> numpy.ndarray`
+
+Final statevectors, shape `(len(circuits), 2 ** n_qubits)`. Measurements are ignored.
+
+### `run(circuits, shots=1000) -> list[collections.Counter]`
+
+Per-circuit counts. Circuits must contain explicit `measure(...)`/`measure_all()`
+ops; one without any returns an empty `Counter`.
+
+```python
+from macquerel import BatchedSimulator
+circuits = [ansatz(theta) for theta in thetas]
+svs = BatchedSimulator().statevectors(circuits)   # one sweep, few kernel launches
 ```
 
 ## Adapters

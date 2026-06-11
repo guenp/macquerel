@@ -3,9 +3,11 @@
 macquerel is a quantum state-vector simulator targeting Apple Silicon's unified-memory
 architecture. The v0.1 and v0.2 lines (CPU/MLX/Metal backends, gate fusion + qubit
 remapping, expectation values, automatic backend selection, Cirq/Qiskit adapters, the full
-benchmarking suite, and the shot-batch / fusion-width autotuners) are **complete** — see
+benchmarking suite, and the shot-batch / fusion-width autotuners) are **complete**, as is
+the v0.2.x+ performance-candidate line (MLX broadcast diagonal + custom dense kernel,
+Metal small-n floor, per-chip tier autotuning, and the `BatchedSimulator`) — see
 [`plan_completed.md`](plan_completed.md) for the shipped record, including the MLX/Metal
-performance findings.
+performance findings and the per-step A/B results.
 
 This document tracks only work that has **not** been implemented yet. Steps keep their
 original numbering for continuity with the completed record.
@@ -27,43 +29,17 @@ notes.
 
 ---
 
-## v0.2.x+ — performance candidates
-
-Measured candidates that came out of the backend comparison
-([`docs/backends.md`](backends.md)), roughly in order of expected payoff. Each would
-follow the same A/B protocol before shipping:
-
-- **Batched small-circuit simulation.** The small-n regime is dispatch-bound, so the
-  fix is amortization: pack hundreds of parameter-sweep circuits (VQE/QML workloads)
-  into one kernel launch. This attacks the fixed per-run costs from the other side;
-  also listed under v0.3 as the `BatchedSimulator` feature.
-- **A custom MLX dense kernel** (`mx.fast.metal_kernel`) would bypass `tensordot`'s
-  internal permutation — the dominant cost on scattered-target circuits — and close
-  most of MLX's random/QFT gap. Deferred during the performance line (Step 29)
-  because the native Metal backend already provides those kernels; it matters only
-  for the no-PyObjC fallback path.
-- **An in-place-style diagonal path for MLX** (compiled elementwise phase multiply
-  instead of a gather table) targets the QFT gap specifically — wide diagonal runs
-  are where MLX falls furthest behind Metal (6.2× at 24q, 9.5× at 28q).
-- **Lowering Metal's small-n floor** — persistent command buffers across `run()`
-  calls, a pre-warmed pipeline cache, pooled buffer allocation — could push the
-  CPU/Metal crossover below 16q.
-- **Per-chip tier boundaries.** The 16q crossover is measured on an M5 Max; base
-  M-series chips have different bandwidth/latency ratios. The same measure-and-cache
-  approach used for `MACQUEREL_FUSION_WIDTH=auto` could autotune backend selection.
-
----
-
 ## v0.3
 
 - **Noise channels / density matrices** — `DensityMatrixSimulator` with Kraus-operator
   channels.
 - **Memory-mapped out-of-core backend** — state vector backed by an NVMe file via
   `np.memmap`, for single large runs past DRAM capacity.
-- **Batched small-circuit simulation** — `BatchedSimulator` packing many small circuits
-  (QML/VQE parameter sweeps) into one kernel launch.
 - **Multi-Mac over Thunderbolt** — distributed state vector using index-bit partitioning
   across machines.
+
+> `BatchedSimulator` (batched small-circuit simulation) shipped early as Step 31 of the
+> v0.2.x+ line — see [`plan_completed.md`](plan_completed.md).
 
 ---
 

@@ -39,7 +39,7 @@ sv = sim.statevector(circuit)      # [0.707+0j, 0, 0, 0.707+0j]
 ## Choosing a backend
 
 ```python
-Simulator()                 # auto: CPU ≤16q, MLX 17–30q, Metal 31q+
+Simulator()                 # auto: CPU ≤15q, Metal 16q+ (MLX fallback 16–30q)
 Simulator(backend="cpu")
 Simulator(backend="mlx")
 Simulator(backend="metal")

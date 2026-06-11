@@ -257,3 +257,26 @@ def test_measure_collapses_to_basis_state():
     assert np.isclose(np.linalg.norm(post), 1.0, atol=1e-5)
     nz = np.flatnonzero(np.abs(post) > 1e-6).tolist()
     assert nz == ([0] if out[0] == 0 else [3])  # |00> or |11>
+
+
+def test_buffer_pool_defers_inflight_buffers(metal):
+    """Step 34: a state buffer with encoded-but-unsubmitted gates must not be
+    recycled until the open command buffer is flushed; afterwards it is."""
+    sv = metal.allocate(8)
+    sv = metal.apply_matrix(sv, g.H(), [0])  # leaves the command buffer open
+    buf = sv.buf
+    del sv
+    assert any(b is buf for _, b in metal._deferred_bufs)
+    fresh = metal.allocate(8)  # same size: must NOT get the in-flight buffer
+    assert fresh.buf is not buf
+    out = metal.to_numpy(fresh)
+    assert out[0] == 1.0 and np.isclose(np.abs(out).sum(), 1.0)
+    # allocate() flushed the open command buffer, so `buf` is poolable now.
+    again = metal.allocate(8)
+    assert again.buf is buf
+
+
+def test_shared_pipelines_across_instances():
+    """Step 34: Metal pipelines are process-wide; instances share them."""
+    a, b = MetalBackend(), MetalBackend()
+    assert a._pipeline("dense", 1) is b._pipeline("dense", 1)

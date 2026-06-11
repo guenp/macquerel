@@ -23,6 +23,7 @@ is the most-significant bit), matching the CPU/MLX backends.
 
 from __future__ import annotations
 
+import weakref
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, cast
@@ -172,6 +173,26 @@ _FLUSH_EVERY = 256
 # command buffers retain their referenced MTLBuffers, so clearing is safe.
 _CONST_CACHE_MAX = 4096
 
+# Step 34: process-wide Metal objects, shared across MetalBackend instances.
+# Creating a device + command queue and runtime-compiling the k=1 pipeline
+# cost ~7.5 ms per MetalBackend() — paid on *every* statevector()/run() call
+# in backend="auto" mode, where the Simulator builds a backend per call. The
+# device, queue, compiled libraries, and pipelines are all stateless w.r.t.
+# a particular state buffer, so they are cached at module level: the first
+# backend warms them and every later instance constructs in ~microseconds.
+_SHARED: dict[str, Any] = {}
+_SHARED_LIBS: dict[int, object] = {}
+_SHARED_PIPELINES: dict[tuple[str, int], object] = {}
+
+# Step 34: pooled state-buffer allocation. Statevector buffers are recycled
+# on a per-backend free list keyed by byte size instead of hitting
+# newBufferWithLength on every allocate() — re-touching warm pages beats
+# faulting fresh ones, which is measurable from ~20q up. Buffers above the
+# size cap are not pooled (a 31q+ state is tens of GiB; hoarding one would
+# cost far more than the allocation saves).
+_POOL_MAX_PER_SIZE = 2
+_POOL_MAX_BUF_BYTES = 1 << 30
+
 
 @dataclass
 class MetalState:
@@ -197,16 +218,20 @@ class MetalBackend:
                 "Note: requires macOS on Apple Silicon with a Metal GPU."
             )
         self._rng = np.random.default_rng(seed)
-        self._dev = Metal.MTLCreateSystemDefaultDevice()  # ty: ignore[unresolved-attribute]
-        self._queue = self._dev.newCommandQueue()
+        # Step 34: device, queue, and compiled pipelines are process-wide (see
+        # _SHARED*); the first backend warms them, later instances are ~free.
+        if "dev" not in _SHARED:
+            _SHARED["dev"] = Metal.MTLCreateSystemDefaultDevice()  # ty: ignore[unresolved-attribute]
+            _SHARED["queue"] = _SHARED["dev"].newCommandQueue()
+        self._dev = _SHARED["dev"]
+        self._queue = _SHARED["queue"]
 
         # Step 25: pipelines are specialized per (kernel, k) — the gate width is
         # baked in via the K_FIXED preprocessor macro so the MSL compiler can
         # unroll the per-row loops. Libraries are compiled lazily per k and both
-        # the libraries and pipelines are cached. Compile k=1 eagerly so a bad
-        # kernel source still fails at construction.
-        self._libs: dict[int, object] = {}
-        self._pipelines: dict[tuple[str, int], object] = {}
+        # the libraries and pipelines are cached (process-wide since Step 34).
+        # Compile k=1 eagerly so a bad kernel source still fails at construction
+        # (cached, so only the first instance pays it).
         self._pipeline("dense", 1)
 
         self._classify_cache: dict[tuple, str] = {}
@@ -215,27 +240,39 @@ class MetalBackend:
         self._open_enc = None
         self._encoded = 0
         self._const_cache: dict[bytes, object] = {}
+        # Step 34: per-dispatch ObjC call elimination — buffers already bound
+        # to the open encoder at each index (the state buffer in particular is
+        # rebound identically by every gate), and packed uint32 scalar bytes.
+        self._enc_bound: dict[int, object] = {}
+        self._scalar_cache: dict[int, bytes] = {}
+        # Step 34: free list of recycled state buffers, keyed by byte size.
+        # `_deferred_bufs` holds buffers whose MetalState died while the open
+        # command buffer might still reference them; they re-enter the pool at
+        # the next _flush(), after the GPU is done with them.
+        self._buf_pool: dict[int, list] = {}
+        self._open_refs: list = []
+        self._deferred_bufs: list[tuple[int, object]] = []
 
     def _pipeline(self, name: str, k: int):
         """Compute pipeline for kernel `name` specialized to gate width `k`."""
         key = (name, k)
-        pipe = self._pipelines.get(key)
+        pipe = _SHARED_PIPELINES.get(key)
         if pipe is not None:
             return pipe
-        lib = self._libs.get(k)
+        lib = _SHARED_LIBS.get(k)
         if lib is None:
             opts = Metal.MTLCompileOptions.new()  # ty: ignore[unresolved-attribute]
             opts.setPreprocessorMacros_({"K_FIXED": str(k)})
             lib, err = self._dev.newLibraryWithSource_options_error_(_KERNEL_SRC, opts, None)
             if lib is None:
                 raise RuntimeError(f"Metal kernel compilation failed (k={k}): {err}")
-            self._libs[k] = lib
+            _SHARED_LIBS[k] = lib
         lib = cast(Any, lib)
         fn = lib.newFunctionWithName_(name)
         pipe, perr = self._dev.newComputePipelineStateWithFunction_error_(fn, None)
         if pipe is None:
             raise RuntimeError(f"Pipeline build failed for {name!r} (k={k}): {perr}")
-        self._pipelines[key] = pipe
+        _SHARED_PIPELINES[key] = pipe
         return pipe
 
     # ---- buffer / readback helpers ---------------------------------------
@@ -257,6 +294,32 @@ class MetalBackend:
         self._open_cb = None
         self._open_enc = None
         self._encoded = 0
+        self._enc_bound.clear()
+        self._open_refs.clear()
+        # Buffers whose state died while encoded work might still reference
+        # them are now GPU-idle; recycle them.
+        for nbytes, buf in self._deferred_bufs:
+            self._pool_put(nbytes, buf)
+        self._deferred_bufs.clear()
+
+    def _pool_put(self, nbytes: int, buf) -> None:
+        if nbytes > _POOL_MAX_BUF_BYTES:
+            return
+        free = self._buf_pool.setdefault(nbytes, [])
+        if len(free) < _POOL_MAX_PER_SIZE:
+            free.append(buf)
+
+    def _release_state_buf(self, nbytes: int, buf) -> None:
+        """Finalizer for MetalState: recycle its buffer (Step 34).
+
+        If the open command buffer may still reference it, park it until the
+        next _flush; handing it straight to the pool could let a new state
+        zero it from the host before the encoded gates have run.
+        """
+        if self._open_cb is not None and any(b is buf for b in self._open_refs):
+            self._deferred_bufs.append((nbytes, buf))
+        else:
+            self._pool_put(nbytes, buf)
 
     def _encoder(self):
         if self._open_cb is None:
@@ -317,13 +380,28 @@ class MetalBackend:
         enc = self._encoder()
         enc.setComputePipelineState_(self._pipeline(name, k))
         for buf, idx in buffers:
-            enc.setBuffer_offset_atIndex_(buf, 0, idx)
+            # Step 34: skip rebinding a buffer already bound at this index for
+            # this encoder — the state buffer (index 0) is identical for every
+            # gate, and consecutive gates often share index tables too.
+            if self._enc_bound.get(idx) is not buf:
+                enc.setBuffer_offset_atIndex_(buf, 0, idx)
+                self._enc_bound[idx] = buf
         for val, idx in scalars:
-            enc.setBytes_length_atIndex_(np.array([val], dtype=np.uint32).tobytes(), 4, idx)
+            data = self._scalar_cache.get(val)
+            if data is None:
+                data = int(val).to_bytes(4, "little")
+                self._scalar_cache[val] = data
+            enc.setBytes_length_atIndex_(data, 4, idx)
+            self._enc_bound.pop(idx, None)
         enc.dispatchThreads_threadsPerThreadgroup_(
             Metal.MTLSizeMake(gx, gy, gz),  # ty: ignore[unresolved-attribute]
             Metal.MTLSizeMake(tg, 1, 1),  # ty: ignore[unresolved-attribute]
         )
+        # The state buffer (index 0) is referenced by encoded-but-unsubmitted
+        # work; remember it so pool recycling can be deferred past the flush.
+        state_buf = buffers[0][0]
+        if not any(b is state_buf for b in self._open_refs):
+            self._open_refs.append(state_buf)
         self._encoded += 1
         if self._encoded >= _FLUSH_EVERY:
             self._flush()
@@ -332,13 +410,19 @@ class MetalBackend:
 
     def allocate(self, n_qubits: int, dtype=np.complex64) -> MetalState:
         nbytes = (2**n_qubits) * 8
-        buf = self._dev.newBufferWithLength_options_(
-            nbytes,
-            Metal.MTLResourceStorageModeShared,  # ty: ignore[unresolved-attribute]
-        )
-        if buf is None:
-            raise MemoryError(f"Metal buffer allocation failed for {n_qubits} qubits")
+        free = self._buf_pool.get(nbytes)
+        if free:
+            buf = free.pop()
+        else:
+            buf = self._dev.newBufferWithLength_options_(
+                nbytes,
+                Metal.MTLResourceStorageModeShared,  # ty: ignore[unresolved-attribute]
+            )
+            if buf is None:
+                raise MemoryError(f"Metal buffer allocation failed for {n_qubits} qubits")
         state = MetalState(buf=buf, n_qubits=n_qubits)
+        # Step 34: recycle the buffer when the state is garbage-collected.
+        weakref.finalize(state, self._release_state_buf, nbytes, buf)
         view = self._view(state)
         view[:] = 0
         view[0] = 1.0
