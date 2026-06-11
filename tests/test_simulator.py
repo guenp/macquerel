@@ -148,12 +148,13 @@ def test_remap_env_counts_match(monkeypatch):
 
 
 def test_select_backend_tiers(monkeypatch):
-    """CPU <=16q, Metal 17q+ (post-Step-22/25 tiers); MLX is the no-Metal fallback."""
+    """CPU <=15q, Metal 16q+ (post-Step-34 tiers); MLX is the no-Metal fallback."""
     import macquerel.simulator as sim
 
     monkeypatch.setattr(sim, "_MLX_AVAILABLE", True)
     monkeypatch.setattr(sim, "_METAL_AVAILABLE", True)
-    assert sim._select_backend(16) == "cpu"
+    assert sim._select_backend(15) == "cpu"
+    assert sim._select_backend(16) == "metal"
     assert sim._select_backend(17) == "metal"
     assert sim._select_backend(22) == "metal"
     assert sim._select_backend(30) == "metal"
@@ -181,3 +182,76 @@ def test_select_backend_fallbacks(monkeypatch):
     # Neither: CPU everywhere.
     monkeypatch.setattr(sim, "_METAL_AVAILABLE", False)
     assert sim._select_backend(20) == "cpu"
+
+
+def test_backend_tiers_env_pins_boundary(monkeypatch):
+    """MACQUEREL_BACKEND_TIERS=<int> pins the CPU tier without measuring."""
+    import macquerel.simulator as sim
+
+    monkeypatch.setenv("MACQUEREL_BACKEND_TIERS", "10")
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", True)
+    monkeypatch.setattr(
+        sim, "autotune_backend_tiers", lambda: (_ for _ in ()).throw(AssertionError)
+    )
+    assert sim._select_backend(10) == "cpu"
+    assert sim._select_backend(11) == "metal"
+
+
+def test_backend_tiers_default_never_measures(monkeypatch):
+    """The zero-config path must not run the tier measurement."""
+    import macquerel.simulator as sim
+
+    monkeypatch.delenv("MACQUEREL_BACKEND_TIERS", raising=False)
+
+    def boom(*a, **k):
+        raise AssertionError("tier autotuner must not run on the default path")
+
+    monkeypatch.setattr(sim, "autotune_backend_tiers", boom)
+    monkeypatch.setattr(sim, "_measure_cpu_max", boom)
+    assert sim._select_backend(8) == "cpu"
+
+
+def test_backend_tiers_env_auto_routes_to_autotuner(monkeypatch):
+    """MACQUEREL_BACKEND_TIERS=auto consults the (cached) autotuner."""
+    import macquerel.simulator as sim
+
+    monkeypatch.setenv("MACQUEREL_BACKEND_TIERS", "auto")
+    monkeypatch.setattr(sim, "autotune_backend_tiers", lambda: 12)
+    monkeypatch.setattr(sim, "_METAL_AVAILABLE", True)
+    assert sim._select_backend(12) == "cpu"
+    assert sim._select_backend(13) == "metal"
+
+
+def test_backend_tiers_autotune_caches_to_disk(monkeypatch, tmp_path):
+    """The measured boundary is persisted and re-read without re-measuring."""
+    import macquerel.simulator as sim
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(sim, "_TIERS_CACHE", None)
+    calls = []
+
+    def fake_measure():
+        calls.append(1)
+        return 14
+
+    monkeypatch.setattr(sim, "_measure_cpu_max", fake_measure)
+    assert sim.autotune_backend_tiers(force=True) == 14
+    assert calls == [1]
+    # A fresh in-memory state must hit the disk cache, not re-measure.
+    monkeypatch.setattr(sim, "_TIERS_CACHE", None)
+    assert sim.autotune_backend_tiers() == 14
+    assert calls == [1]
+
+
+def test_backend_tiers_measure_failure_falls_back(monkeypatch, tmp_path):
+    """A measurement failure falls back to the default and never raises."""
+    import macquerel.simulator as sim
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(sim, "_TIERS_CACHE", None)
+
+    def boom():
+        raise RuntimeError("no GPU today")
+
+    monkeypatch.setattr(sim, "_measure_cpu_max", boom)
+    assert sim.autotune_backend_tiers(force=True) == sim._CPU_MAX_QUBITS
