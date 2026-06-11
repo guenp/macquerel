@@ -81,6 +81,14 @@ class Simulator:
         self.batch_shots = batch_shots
         self._np_dtype = np.complex64 if dtype == "complex64" else np.complex128
         self._backend = None if backend == "auto" else _make_backend(backend, dtype, seed)
+        # Step 34: in auto mode, reuse backend instances across calls instead
+        # of constructing one per call — backend construction used to cost
+        # ~7.5 ms for Metal (device + queue + pipeline compile; now also
+        # cached process-wide) and reuse keeps the backend's buffer pool and
+        # classify/pipeline caches warm. Seeded simulators keep the
+        # fresh-backend-per-call behavior: each call must restart the RNG
+        # stream so repeated runs stay bit-identical.
+        self._auto_backends: dict[str, object] = {}
 
     def _backend_name_for(self, n_qubits: int) -> str:
         if self.backend_name != "auto":
@@ -90,7 +98,14 @@ class Simulator:
     def _get_backend(self, n_qubits: int):
         if self._backend is not None:
             return self._backend
-        return _make_backend(self._backend_name_for(n_qubits), self.dtype, self._seed)
+        name = self._backend_name_for(n_qubits)
+        if self._seed is not None:
+            return _make_backend(name, self.dtype, self._seed)
+        backend = self._auto_backends.get(name)
+        if backend is None:
+            backend = _make_backend(name, self.dtype, None)
+            self._auto_backends[name] = backend
+        return backend
 
     def statevector(self, circuit: Circuit) -> np.ndarray:
         backend = self._get_backend(circuit.n_qubits)
