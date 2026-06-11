@@ -276,7 +276,9 @@ class BatchedSimulator:
                 if on_measure is not None:
                     on_measure(states, op.qubits)
                 continue
-            # Signature grouping guarantees ops[pos] is a Gate in every circuit.
+            # Signature grouping guarantees ops[pos] is a Gate in every circuit
+            # (_common_width already rejected circuits with ChannelOps).
+            op = cast(Gate, op)
             mats = np.stack(
                 [cast(Gate, ops[pos]).matrix.astype(np.complex64) for ops in ops_per_circuit]
             )
