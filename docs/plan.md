@@ -75,12 +75,13 @@ I/O. What *does* transfer from DuckDB is everything around the buffer pool:
    cache blocking lifted one level — DRAM as the cache, NVMe as main memory — and it
    is the entire performance story: one episode costs a full-state read+write
    regardless of how many gates it carries.
-4. **Graceful degradation.** Budget ≥ state size → one chunk, today's in-RAM Metal
-   path, zero overhead. Budget < state size → the same backend streams chunks.
-   Metal composes directly: `newBufferWithBytesNoCopy:` accepts the page-aligned
-   chunk buffer, so the GPU computes on the resident chunk while the I/O thread
-   prefetches the next — DuckDB's pin/unpin, with exactly three pins live
-   (compute / prefetch / writeback).
+4. **Graceful degradation.** Budget ≥ state size → explicitly bypass the chunk manager
+   and route to today's in-RAM backend, preserving the existing hot path. Budget <
+   state size → stream chunks. Metal should compose directly via
+   `newBufferWithBytesNoCopy:` over page-aligned chunk buffers, but this is the
+   riskiest systems assumption and must be validated before scheduler work: confirm
+   no hidden copies, no page-fault collapse, and stable throughput with a tiny-budget
+   prototype.
 5. **Clean pages skip writeback.** DuckDB drops unmodified cached pages instead of
    spilling them. The analog: read-only passes (sampling, probabilities,
    expectation values) stream chunks without writing them back — half the I/O.
@@ -107,37 +108,47 @@ single-machine A/B.
 
 ### Steps
 
-- **Step 41: chunked state store + budget knob** — a `ChunkedState` owning one
-  page-aligned file (`MACQUEREL_TEMP_DIR`, default alongside the platform temp dir;
-  checked against free disk up front, deleted on exit — DuckDB's `temp_directory` /
-  `max_temp_directory_size` semantics), a `MACQUEREL_MEMORY_LIMIT` budget, and a
-  three-buffer streaming pipeline (compute / prefetch / writeback) feeding the Metal
-  backend via `newBufferWithBytesNoCopy:`. Correctness gate: identical amplitudes vs
-  the in-RAM path at small n with an artificially tiny budget (the budget knob makes
-  out-of-core testable at 20q in CI). Sub-step: optional **lz4 chunk compression on
-  the writeback path** with a raw fallback when the ratio is poor (DuckDB stores
-  spilled blocks the same way) — multithreaded lz4 decompresses at tens of GB/s,
-  comfortably above the NVMe, so it is near-free capacity on structured states
-  (a GHZ state is two nonzeros) and harmless on Haar-random ones, which are
-  incompressible.
-- **Step 42: episode scheduler** — compile the fused gate stream into chunk-local
-  episodes split at global-bit barriers; route diagonal/phase gates on global bits
-  into episodes (they need no cross-chunk pairing); skip writeback for read-only
+- **Step 41: chunked state store + no-copy Metal proof** — first build the smallest
+  useful `ChunkedState`: one page-aligned file (`MACQUEREL_TEMP_DIR`, default
+  alongside the platform temp dir; checked against free disk up front, deleted on
+  exit — DuckDB's `temp_directory` / `max_temp_directory_size` semantics), a
+  `MACQUEREL_MEMORY_LIMIT` budget, and an explicit in-RAM bypass when the budget
+  covers the state. Prototype one local gate over artificially chunked small states,
+  feeding Metal with `newBufferWithBytesNoCopy:`. Ship this step only if the prototype
+  produces identical amplitudes vs the in-RAM path, peak RSS respects the tiny budget,
+  Instruments/benchmarks show no hidden full-state copy, and sequential read/write +
+  compute throughput stays near the measured NVMe/Metal roofline.
+- **Step 42: three-buffer streaming pipeline** — generalize Step 41 into the compute /
+  prefetch / writeback pipeline with exactly three live pins, plus read-only streaming
+  that skips writeback for sampling, probabilities, and expectation values. Benchmark
+  this before the full scheduler: report effective GB/s for raw sequential
+  read/write, read-only streaming, and one local-gate episode at forced-small budgets.
+- **Step 43: episode scheduler + gate classification** — compile the fused gate stream
+  into chunk-local episodes split at global-bit barriers. Make locality rules explicit:
+  gates whose non-diagonal target action is wholly local stay inside a chunk;
+  diagonal/phase gates on global bits stay local because they never pair chunks;
+  controls on global bits are local when the target action is local because they only
+  mask chunks; non-diagonal global targets are barriers. Skip writeback for read-only
   passes. A/B metric: episodes per circuit (= full-state I/O passes), then wall time.
-- **Step 43: global bits via remap passes** — when a dense gate needs a global bit,
-  emit one explicit remap episode (swap a global bit with a cold local bit — a
-  paired-chunk streaming pass) instead of pairing chunks ad hoc, then proceed
+- **Step 44: global bits via remap passes** — when a non-diagonal gate needs a global
+  target bit, emit one explicit remap episode (swap a global bit with a cold local bit
+  — a paired-chunk streaming pass) instead of pairing chunks ad hoc, then proceed
   chunk-locally. Reuses the existing disabled-by-default `remap_qubits` machinery,
   which finally has the cost asymmetry it was built for. A/B: remap-pass count and
   wall time on the random-circuit benchmark at 34q.
-- **Step 44: out-of-core benchmark + ship gate** — extend `bench_memory.py` with a
+- **Step 45: optional lz4 writeback compression** — only after the raw pipeline works,
+  add opt-in lz4 chunk compression on the writeback path with a raw fallback when the
+  ratio is poor. Gate it on wall time, not just ratio: structured states like GHZ may
+  compress nearly for free, but Haar-random chunks must short-circuit quickly enough
+  that failed compression does not disturb GPU/I/O overlap.
+- **Step 46: out-of-core benchmark + ship gate** — extend `bench_memory.py` with a
   spilled series (peak RAM must respect the budget; report episodes and effective
   GB/s against the NVMe roofline) and a 34q GHZ/QFT/random wall-time table. Ship only
   if 34q runs end-to-end under the default budget without swap and the in-RAM path
   shows zero regression. SSD-endurance note in the docs: an episode writes the full
   state (128 GiB at 34q), so deep unfused circuits are a TBW consideration —
   documented, not engineered around, in v0.4.
-- **Step 45: block-float `complex32` states** — opt-in half-precision amplitude
+- **Step 47: block-float `complex32` states** — opt-in half-precision amplitude
   storage (`dtype="complex32"`): two float16s per amplitude plus one float32
   max-magnitude scale per chunk. The per-chunk scale is load-bearing, not a nicety:
   at 34q the typical amplitude magnitude is ~2⁻¹⁷ ≈ 8e-6, *below* float16's normal
