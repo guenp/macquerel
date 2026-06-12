@@ -211,7 +211,10 @@ def measure_cell(backend: str, n: int, timeout: float, dm: bool = False) -> dict
     rss = _MAXRSS_RE.search(proc.stderr)
     if not fp or not rss:
         raise RuntimeError("could not parse /usr/bin/time -l output")
-    cell = {"footprint": int(fp.group(1)), "maxrss": int(rss.group(1))}
+    cell: dict[str, int | float] = {
+        "footprint": int(fp.group(1)),
+        "maxrss": int(rss.group(1)),
+    }
     if samples:
         cell["gpu_util_peak"] = max(samples)
         cell["gpu_util_mean"] = round(sum(samples) / len(samples), 1)

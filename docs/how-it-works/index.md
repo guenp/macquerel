@@ -190,10 +190,12 @@ A circuit flows through three layers:
 All three backends implement the same small protocol — `allocate`, `apply_matrix`,
 `measure`, `sample`, `expectation_pauli` — and are differential-tested against each
 other, so they are interchangeable in correctness and differ only in performance.
-Two more simulators reuse the same machinery: `BatchedSimulator` evolves many small
-same-shaped circuits as one batched tensor (for parameter sweeps), and
+Three more simulators reuse the same machinery: `BatchedSimulator` evolves many small
+same-shaped circuits as one batched tensor (for parameter sweeps),
 `DensityMatrixSimulator` runs *noisy* circuits by treating an n-qubit density matrix
-as a 2n-qubit statevector — see [Noise and density matrices](noise.md).
+as a 2n-qubit statevector, and `TrajectorySimulator` runs noisy circuits past the
+density-matrix ceiling by averaging stochastic pure-state trajectories — see
+[Noise and density matrices](noise.md).
 
 ## Where this sits in the literature
 

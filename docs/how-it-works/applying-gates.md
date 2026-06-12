@@ -26,8 +26,8 @@ of the tensor is exactly qubit q**:
 state = sv.reshape((2,) * n)   # state[b0, b1, ..., b_{n-1}] = amplitude of |b0 b1 ... ⟩
 ```
 
-Now "apply a gate to qubit q" becomes "apply a 2×2 matrix along axis q", which is a
-standard array operation (`np.tensordot`). Marginal probabilities are axis sums.
+Now "apply a gate to qubit q" becomes "apply a 2×2 matrix along axis q", a standard
+array operation. Marginal probabilities are axis sums.
 Nearly every line of backend code is a restatement of this picture.
 
 ## One gate, one sweep
@@ -66,9 +66,10 @@ those bits and differ only at the k target bits, and the gate is an independent
 
 This *group picture* is implemented three ways:
 
-- **CPU** (`backends/cpu.py`): `np.tensordot(gate, state, axes=([k..2k), targets])`
-  contracts the gate against the target axes — NumPy's optimized BLAS-backed path —
-  then a transpose puts the axes back in place.
+- **CPU** (`backends/cpu.py`): transpose the `(2,)*n` view so the target axes lead
+  (a stride trick, no data movement), then sweep the groups in cache-sized chunks —
+  gather a chunk into contiguous scratch, one BLAS matmul over all its groups at
+  once, scatter the result back to the same positions, in place.
 - **Metal** (`backends/metal_backend.py`): one GPU thread *owns* one group. It
   reconstructs the group's 2ᵏ indices with bit arithmetic, reads the amplitudes,
   multiplies by the matrix, and writes them back **to the same locations** — groups
