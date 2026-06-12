@@ -20,6 +20,11 @@ x layers, 2*n*layers parameters):
                   for both paths so only the evolution strategy differs.
                   Swept vs P (depth sweep at fixed n).
 
+The energy sweep runs each backend to its ceiling (`MAX_QUBITS` — Metal 31,
+MLX 30, CPU 24; see the constant for why Metal stops at 31 here and not its
+32-qubit statevector limit); large cells use a light one-rep/no-warm-up
+protocol (`LIGHT_QUBITS`).
+
 Usage:
     uv run python benchmarks/bench_vqe.py
     uv run python benchmarks/bench_vqe.py --qubits 4 8 12 --layers 1 2 4 \
@@ -43,6 +48,18 @@ from macquerel.simulator import _make_backend
 BACKENDS = ["cpu", "mlx", "metal"]
 BACKEND_COLORS = {"metal": "#d62728", "mlx": "#1f77b4", "cpu": "#2ca02c"}
 GRAD_COLORS = {"loop": "#7f7f7f", "batched-cpu": "#2ca02c", "batched-mlx": "#1f77b4"}
+
+# Per-backend qubit ceilings for the energy sweep. MLX stops at 30 (int32
+# ShapeElem). Metal's statevector ceiling is 32, but `expectation_pauli`'s
+# host path holds ~4 state-sized buffers at once (the GPU state, its to_numpy
+# copy, the per-term working copy, and a conj() temporary) — at 32q that is
+# 4 x 32 GiB, beyond a 128 GiB machine, so the energy sweep stops at 31
+# (4 x 16 GiB). The CPU cap is patience, not memory.
+MAX_QUBITS = {"cpu": 24, "mlx": 30, "metal": 31}
+# At and above this qubit count, energy cells run one rep with no warm-up:
+# they are bandwidth-bound multi-second runs where dispatch noise and pipeline
+# compilation are negligible.
+LIGHT_QUBITS = 24
 
 
 def ansatz(n: int, thetas: np.ndarray, layers: int) -> Circuit:
@@ -91,8 +108,9 @@ def tfim_energy_host(states: np.ndarray, n: int, j: float = 1.0, h: float = 1.0)
     return e
 
 
-def time_call(fn, reps: int) -> float:
-    fn()  # warm-up (kernel/pipeline compilation, buffer pools)
+def time_call(fn, reps: int, warmup: bool = True) -> float:
+    if warmup:
+        fn()  # warm-up (kernel/pipeline compilation, buffer pools)
     best = float("inf")
     for _ in range(reps):
         t0 = time.perf_counter()
@@ -109,7 +127,8 @@ def time_energy(backend_name: str, n: int, layers: int, reps: int) -> float:
     sim = TrajectorySimulator(backend=backend_name, trajectories=1)
     qc = ansatz(n, random_thetas(n, layers), layers)
     ham = tfim_terms(n)
-    return time_call(lambda: sim.expectation_pauli(qc, ham), reps)
+    light = n >= LIGHT_QUBITS
+    return time_call(lambda: sim.expectation_pauli(qc, ham), 1 if light else reps, warmup=not light)
 
 
 # ----------------------------------------------------------------------------
@@ -142,7 +161,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--qubits", type=int, nargs="+", default=[4, 8, 12, 16, 20])
+    ap.add_argument(
+        "--qubits",
+        type=int,
+        nargs="+",
+        default=[4, 8, 12, 16, 20, 24, 28, 30, 31],
+        help="energy-sweep sizes; each backend stops at its MAX_QUBITS ceiling",
+    )
     ap.add_argument("--layers", type=int, nargs="+", default=[1, 2, 4, 8, 16])
     ap.add_argument("--fixed-layers", type=int, default=4, help="depth for the qubit sweep")
     ap.add_argument("--fixed-qubits", type=int, default=12, help="width for the depth sweep")
@@ -187,6 +212,9 @@ def main() -> None:
     for n in args.qubits:
         row = f"{n:>3} {2 * n * args.fixed_layers:>7}"
         for b in available:
+            if n > MAX_QUBITS[b]:
+                row += f" {'-':>12}"
+                continue
             secs = time_energy(b, n, args.fixed_layers, args.reps)
             results["data"]["qubits"].setdefault(b, []).append([n, secs])
             row += f" {secs * 1e3:>10.2f}ms"
