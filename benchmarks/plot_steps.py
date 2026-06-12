@@ -16,6 +16,10 @@ previous measurement forward, so cumulative numbers always compare like with lik
 
 Usage:
     uv run python benchmarks/plot_steps.py [--dir benchmarks/data/steps]
+
+run_step_bench.sh times the steps through the ASV harness and uses this
+script's ``--export-asv <step> <commit> <backend> [...]`` mode to convert the
+saved ASV results into the per-step JSONs plotted here.
 """
 
 from __future__ import annotations
@@ -236,11 +240,90 @@ def make_backend_curves(steps, timeline, backend, out_path):
     print(f"Chart -> {out_path}")
 
 
+# ---------------------------------------------------------------------------
+# ASV export — turn one `asv run <commit>^!` result (written by
+# run_step_bench.sh) into the per-(step, backend) JSONs this script plots.
+# ---------------------------------------------------------------------------
+ASV_BENCHMARK = "statevector.StatevectorRuntime.time_statevector"
+
+
+def _asv_result_file(results_root: Path, commit: str) -> Path:
+    matches = list(results_root.glob(f"*/{commit[:8]}-*.json"))
+    if not matches:
+        raise SystemExit(f"no ASV result for commit {commit[:8]} under {results_root}")
+    return max(matches, key=lambda p: p.stat().st_mtime)
+
+
+def export_asv(step: str, commit: str, backends: list[str], results_root: Path, out_dir: Path):
+    """Write <step>-<commit>-<backend>.json files from a saved ASV result."""
+    import ast
+    from itertools import product
+
+    path = _asv_result_file(results_root, commit)
+    doc = json.loads(path.read_text())
+    entry = doc["results"].get(ASV_BENCHMARK)
+    if not entry:
+        raise SystemExit(f"{path} has no {ASV_BENCHMARK} results")
+    row = dict(zip(doc["result_columns"], entry, strict=False))
+    params = [[ast.literal_eval(v) for v in axis] for axis in row["params"]]
+    values = row.get("result") or []
+    samples = row.get("samples") or [None] * len(values)
+
+    cells: dict[str, dict[str, list]] = {}  # backend -> circuit -> [(q, secs)]
+    for (circ, backend, q), value, cell_samples in zip(
+        product(*params), values, samples, strict=True
+    ):
+        # min(samples) = best-of-reps, like bench_statevector.time_run();
+        # value is the fallback when samples were not recorded. None/NaN =
+        # the cell was skipped (memory budget / qubit cap) or not selected.
+        secs = min(cell_samples) if cell_samples else value
+        if secs is None or not math.isfinite(secs):
+            continue
+        cells.setdefault(str(backend), {}).setdefault(str(circ), []).append((int(q), float(secs)))
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for backend in backends:
+        if backend not in cells:
+            print(f"WARNING: no ASV cells for {backend} in {path.name}")
+            continue
+        results = {circ: {backend: sorted(series)} for circ, series in cells[backend].items()}
+        out = out_dir / f"{step}-{commit[:7]}-{backend.removeprefix('macquerel-')}.json"
+        out.write_text(
+            json.dumps(
+                {
+                    "benchmark": "framework_comparison",
+                    "source": f"asv:{path.name}",
+                    "results": results,
+                    "step": step,
+                    "commit": commit[:7],
+                },
+                indent=2,
+            )
+        )
+        print(f"Exported {backend} -> {out}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dir", default="benchmarks/data/steps")
+    ap.add_argument(
+        "--export-asv",
+        nargs="+",
+        metavar="ARG",
+        default=None,
+        help="export ASV results into --dir as step JSONs instead of plotting: "
+        "--export-asv <step> <commit> <backend> [<backend> ...]",
+    )
+    ap.add_argument("--asv-results", default="benchmarks/.asv/results")
     args = ap.parse_args()
     data_dir = Path(args.dir)
+
+    if args.export_asv:
+        if len(args.export_asv) < 3:
+            ap.error("--export-asv needs <step> <commit> <backend> [<backend> ...]")
+        step, commit, *backends = args.export_asv
+        export_asv(step, commit, backends, Path(args.asv_results), data_dir)
+        return
 
     steps, by_step, commits = load_steps(data_dir)
     if not steps:

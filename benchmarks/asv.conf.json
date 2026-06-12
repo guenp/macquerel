@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "project": "macquerel",
+  "project_url": "https://github.com/guenp/macquerel",
+  "repo": "..",
+  "branches": ["main"],
+  "environment_type": "virtualenv",
+  "pythons": ["3.13"],
+  "benchmark_dir": "asv_benchmarks",
+  "env_dir": ".asv/env",
+  "results_dir": ".asv/results",
+  "html_dir": ".asv/html",
+  "install_command": "python -m pip install {wheel_file}[bench,mlx,metal]",
+  "show_commit_url": "https://github.com/guenp/macquerel/commit/",
+  "build_command": "python -m pip wheel --no-deps --wheel-dir {build_cache_dir} {build_dir}"
+}
