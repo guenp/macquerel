@@ -5,8 +5,47 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Apply narrow control-free density-matrix unitaries as a single
+  `kron(U, conj(U))` superoperator pass over the paired ket+bra axes (Step 40),
+  one full-state pass instead of two, with kind-aware eligibility (diagonal k<=4,
+  monomial k<=3, dense k<=2): a small consistent win (1.0-1.09x) across backends.
+- Replace the CPU backend's tensordot dense apply with an in-place chunked
+  gather/GEMM/scatter (Step 39): peak memory falls from ~3x to ~1.03x of the state
+  size (a 28-qubit GHZ now peaks at 2.05 GiB) and runtime improves in every
+  measured cell, up to 1.70x on random@24q. The controlled path reuses the same
+  in-place routine on its control-slice view.
+- Compute `DensityMatrixSimulator.expectation_pauli` as a monomial gather (Step 38):
+  `tr(rho P) = sum_i phase(i) * rho[i, i ^ mask]` off the zero-copy host view,
+  replacing a full `4**n` readback plus a state-sized copy per term — 6.3x faster
+  at 2.9x less peak (n=14, 4 terms, Metal). `density_matrix()` gains an opt-in
+  `copy=False` zero-copy view.
+- Cut MLX peak memory from 19-25x to 3-5x of the state size (Step 36): monomial
+  (permutation) gates now use a register-resident group-per-thread Metal kernel
+  instead of materializing full-width gather-index intermediates in the lazy graph;
+  the async-eval cadence tightens to every 2 gates with two-deep backpressure above
+  26 effective qubits; and observation boundaries return the buffer pool to the OS
+  when it exceeds an eighth of unified memory. MLX now reaches 29-30q statevectors
+  and 15-qubit density matrices without swap, and every measured runtime cell
+  improved (GHZ@24-28q 6.5-7.9x, QFT 2.1-2.6x, random 1.2-1.8x).
+- Refresh the large statevector and memory benchmark artifacts after the v0.3.x RAM
+  line: the MLX statevector series now extends to 30 qubits (previously skipped for
+  memory) and the density-matrix series to n=15; measured peak multipliers drop to
+  ~1.03x (CPU) and ~3-5x (MLX) of the state size. MLX remains capped at 30 qubits by
+  the upstream int32 `ShapeElem` limit (arrays of 2**31+ elements are not
+  representable); Metal covers 31-33q.
+
 ### Added
 
+- Add `TrajectorySimulator` (Step 37): Monte-Carlo wavefunction simulation of noisy
+  circuits at statevector (`2**n`) memory — each trajectory samples one Kraus
+  operator per channel with its Born probability and renormalizes, exact in
+  expectation with error ~ `1/sqrt(trajectories)`. Built-in channels jump-sample
+  from a single `abs2sum` marginal (no state copies, Metal-compatible), so noisy
+  simulation reaches the full statevector range instead of the density matrix's
+  n=16 cap: a noisy 30-qubit GHZ runs at 10.3 s/trajectory on Metal with a
+  footprint constant in trajectory count.
 - Add `DensityMatrixSimulator`: noisy circuit simulation over the vectorized density
   matrix (a `4**n` doubled statevector), reusing the CPU/MLX/Metal backends unchanged —
   unitaries apply to the ket and bra axes, Kraus channels as one dense superoperator per

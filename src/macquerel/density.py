@@ -40,6 +40,20 @@ from macquerel.simulator import _make_backend, _select_backend
 # ceilings land here. CPU has no hard cap, only patience and RAM.
 _BACKEND_MAX_DM_QUBITS = {"mlx": 15, "metal": 16}
 
+# Step 40: control-free gates apply as one kron(U, conj(U)) superoperator
+# over their paired ket+bra axes — one pass over the 4**n state instead of
+# two (U on the ket axes, conj(U) on the bra axes) — when the *doubled* gate
+# stays inside each backend's fast envelope. The eligible width depends on
+# the gate kind, because kron preserves it: a diagonal's superoperator is
+# still diagonal (broadcast multiply, width-insensitive; capped only by the
+# 4**k x 4**k matrix the apply_matrix interface materializes), a monomial's
+# stays monomial (gather; the MLX kernel caps at doubled width 6), and dense
+# superoperators of doubled width 6 spill GPU registers (measured 5x slower
+# on random circuits) — so dense caps at 2. Fusion width is left untouched:
+# capping it at the superop width lost more to extra passes than single-pass
+# saved (both variants measured; see plan_completed).
+_SUPEROP_MAX_QUBITS_BY_KIND = {"diagonal": 4, "permutation": 3, "dense": 2}
+
 
 class DensityMatrixSimulator:
     """Noisy circuit simulation via the vectorized density matrix.
@@ -74,18 +88,29 @@ class DensityMatrixSimulator:
         # Metal buffer pool and pipeline caches stay warm. Sampling randomness
         # lives in self._rng, not the backend, so reuse is seed-safe here.
         self._backends: dict[str, object] = {}
+        # Step 40: kron(U, conj(U)) memoized by gate-matrix bytes; None marks
+        # gates too wide for their kind's single-pass envelope.
+        self._superop_cache: dict[tuple, np.ndarray | None] = {}
 
     # -- public API ----------------------------------------------------------
 
-    def density_matrix(self, circuit: Circuit) -> np.ndarray:
+    def density_matrix(self, circuit: Circuit, *, copy: bool = True) -> np.ndarray:
         """The final density matrix, shape ``(2**n, 2**n)`` complex.
 
-        This materializes the full matrix on the host — ``4**n * 8`` bytes on
-        top of the backend's state. Prefer `probabilities` / `run` /
-        `expectation_pauli` for large n.
+        With ``copy=True`` (default) this materializes the full matrix on the
+        host — ``4**n * 8`` bytes on top of the backend's state. Prefer
+        `probabilities` / `run` / `expectation_pauli` for large n.
+
+        ``copy=False`` (Step 38) returns a read-only-by-convention *view*
+        over the backend's own storage where one exists — zero-copy on CPU
+        and on Metal's unified-memory buffer; MLX still pays one readback.
+        The view is only valid until this simulator runs another circuit on
+        the same backend.
         """
         backend, state = self._evolve(circuit)
         n = circuit.n_qubits
+        if not copy:
+            return self._host_view(backend, state).reshape(2**n, 2**n)
         return backend.to_numpy(state).reshape(2**n, 2**n)
 
     def probabilities(self, circuit: Circuit) -> np.ndarray:
@@ -126,26 +151,47 @@ class DensityMatrixSimulator:
     def expectation_pauli(self, circuit: Circuit, pauli_strings) -> np.ndarray:
         """``tr(rho P)`` for each ``(coeff, [(pauli_char, qubit), ...])`` term.
 
-        ``tr(rho P) = sum_i vec(rho P)[i*2**n + i]`` and
-        ``vec(rho P) = (I (x) P^T) vec(rho)``: each Pauli is applied
-        *transposed* to the bra axis of a host copy, then the diagonal is
-        summed. One full host readback total, plus one copy per term.
+        Step 38: a Pauli string is monomial — ``P|i> = phase(i) |i ^ mask>``
+        with `mask` the X/Y bit pattern — so
+        ``tr(rho P) = sum_i phase(i) * rho[i, i ^ mask]``: a gather of
+        ``2**n`` elements off the (zero-copy on CPU/Metal) host view, with
+        ``phase(i) = i**(#Y) * (-1)**popcount(i & zy_mask)``. Replaces the
+        previous full ``4**n`` readback plus a state-sized copy per term.
         """
-        from macquerel.backends.cpu import CPUBackend
-        from macquerel.gates import I as I_gate
-        from macquerel.gates import X, Y, Z
-
-        pauli_t = {"X": X().T, "Y": Y().T, "Z": Z().T, "I": I_gate().T}
         backend, state = self._evolve(circuit)
         n = circuit.n_qubits
-        vec = backend.to_numpy(state)
-        cpu = CPUBackend()
+        vec = self._host_view(backend, state)
+        dim = np.int64(2**n)
+        idx = np.arange(dim, dtype=np.int64)
         results = []
         for coeff, terms in pauli_strings:
-            work = vec.copy()
+            x_mask = 0  # bits flipped by the string (X and Y)
+            zy_mask = 0  # bits contributing a (-1)**bit sign (Z and Y)
+            n_y = 0
             for pauli_char, qubit in terms:
-                work = cpu.apply_matrix(work, pauli_t[pauli_char], [n + qubit])
-            results.append(coeff * float(np.real(np.sum(work[:: 2**n + 1]))))
+                bit = 1 << (n - 1 - qubit)  # qubit q is bit n-1-q of the index
+                if pauli_char == "X":
+                    x_mask |= bit
+                elif pauli_char == "Y":
+                    x_mask |= bit
+                    zy_mask |= bit
+                    n_y += 1
+                elif pauli_char == "Z":
+                    zy_mask |= bit
+                elif pauli_char != "I":
+                    raise ValueError(f"unknown Pauli {pauli_char!r}")
+            gathered = vec[idx * dim + (idx ^ x_mask)]
+            if zy_mask:
+                # Popcount parity via a shift-xor fold: np.bitwise_count needs
+                # NumPy >= 2.0 and the project floor is 1.24.
+                parity = idx & zy_mask
+                for shift in (32, 16, 8, 4, 2, 1):
+                    parity ^= parity >> shift
+                signs = 1.0 - 2.0 * (parity & 1)
+                total = np.sum(signs * gathered)
+            else:
+                total = np.sum(gathered)
+            results.append(coeff * float(np.real(1j**n_y * total)))
         return np.array(results)
 
     def purity(self, circuit: Circuit) -> float:
@@ -200,7 +246,19 @@ class DensityMatrixSimulator:
         state = backend.allocate(2 * n, self._np_dtype)  # vec(|0..0><0..0|)
         for op in fused.ops:
             if isinstance(op, Gate):
-                # rho -> U rho U^dagger: U on ket axes, conj(U) on bra axes.
+                sup = None if op.controls else self._gate_superoperator(op.matrix)
+                if sup is not None:
+                    # Step 40: rho -> U rho U^dagger as one kron(U, conj(U))
+                    # pass over the paired ket+bra axes (the unitary special
+                    # case of the channel superoperator below).
+                    state = backend.apply_matrix(
+                        state, sup, op.targets + [n + t for t in op.targets], None
+                    )
+                    continue
+                # Controlled / wide gates: U on ket axes, conj(U) on bra axes.
+                # (A controlled-U's ket(x)bra product is not itself a single
+                # controlled gate — its control projectors cross-multiply — so
+                # controls keep the two-pass path.)
                 state = backend.apply_matrix(state, op.matrix, op.targets, op.controls or None)
                 state = backend.apply_matrix(
                     state,
@@ -216,6 +274,26 @@ class DensityMatrixSimulator:
             elif isinstance(op, MeasureOp) and on_measure is not None:
                 on_measure(backend, state, op.qubits)
         return backend, state
+
+    def _gate_superoperator(self, matrix: np.ndarray) -> np.ndarray | None:
+        """Memoized ``kron(U, conj(U))`` for the Step 40 single-pass apply.
+
+        Returns ``None`` when the gate is too wide for its kind's fast
+        envelope (see ``_SUPEROP_MAX_QUBITS_BY_KIND``) and must take the
+        two-pass path.
+        """
+        from macquerel.gates import classify
+
+        key = (matrix.shape[0], matrix.tobytes())
+        if key in self._superop_cache:
+            return self._superop_cache[key]
+        k = int(np.log2(matrix.shape[0]))
+        sup = None
+        if k <= _SUPEROP_MAX_QUBITS_BY_KIND[classify(matrix)]:
+            m = matrix.astype(np.complex64)
+            sup = np.kron(m, m.conj())
+        self._superop_cache[key] = sup
+        return sup
 
     @staticmethod
     def _host_view(backend, state) -> np.ndarray:

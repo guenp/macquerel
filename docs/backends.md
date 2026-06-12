@@ -15,7 +15,7 @@ subprocess-isolated cells (`benchmarks/data/large`, reproduce with
 
 | | CPU | MLX | Metal |
 |---|---|---|---|
-| Engine | NumPy (`tensordot` + in-place diagonal multiply) | [MLX](https://github.com/ml-explore/mlx) lazy compute graph | Custom Metal kernels via PyObjC |
+| Engine | NumPy (in-place chunked GEMM + diagonal multiply) | [MLX](https://github.com/ml-explore/mlx) lazy compute graph | Custom Metal kernels via PyObjC |
 | State storage | NumPy array | `mx.array` in unified memory, **double-buffered** per gate (~2× state size, plus lazy-graph temporaries) | One `MTLBuffer`, updated **in place** (1× state size) |
 | Max qubits | ~24 practical | **30** (MLX's `int32` shape limit rejects ≥2³¹ amplitudes) | **33** (64-bit indexing; a 64 GiB state on a 128 GiB machine) |
 | Wins at | **≤16q** | — (fallback for 17–30q when PyObjC-Metal is absent) | **≥17q** |
@@ -119,7 +119,8 @@ cost ~2.3 ms each at 24q on Metal; random's scattered ones ~8.6 ms).
 
 Past 24q Metal pulls ahead even on QAOA (1.5–2.35× at 26–28q): in-place updates move
 half the bytes of MLX's double-buffering, and MLX additionally throttles its lazy graph
-(`async_eval` every 16 gates at ≥24q) to keep its temporaries from swapping.
+(`async_eval` every 16 gates at ≥24q, every 2 with backpressure above 26q) to keep its
+temporaries from swapping.
 
 ## Getting the best performance
 
@@ -139,7 +140,7 @@ half the bytes of MLX's double-buffering, and MLX additionally throttles its laz
    `benchmarks/data/memory.png` — which also charts each cell's GPU utilization):
    Metal sits *on* the theoretical line (32.2 GiB
    at 32q — genuinely in-place, +150 MB runtime baseline), the CPU backend peaks
-   ~3× (tensordot copies), and MLX peaks up to ~20× on shallow circuits at 28q
+   ~1.03× (in-place chunked apply), and MLX peaks ~3–5×
    (double-buffering plus lazy-graph temporaries). If the working set approaches
    RAM, the OS swaps and runtimes fall off a cliff — that, not compute, is usually
    what a "slow" 28q+ run is. Density matrices double the qubit count: an n-qubit
@@ -167,6 +168,10 @@ custom MLX dense kernel, the broadcast MLX diagonal path (qft@28 4.5×), lowerin
 Metal's small-n floor, and per-chip tier autotuning — have all **shipped** as
 Steps 31–35; see [the completed plan](plan_completed.md) for commits and measured
 A/B results. (The QFT/random numbers above predate that line: the MLX QFT gap
-quoted here has since closed from 6.2×/9.5× to ~1.6×/2.2×.) Remaining work is the
-v0.3 capacity line (noise channels, out-of-core states past 33q, multi-Mac
-distribution over Thunderbolt) — see [the implementation plan](plan.md).
+quoted here has since closed from 6.2×/9.5× to ~1.6×/2.2×.) The v0.3.x RAM line
+(Steps 36–40) has shipped as well: MLX peaks fell from ~20× to ~3–5× of the state
+(un-blocking 29–30q statevectors), CPU's from ~3× to ~1.03×, and noise simulation
+arrived as `DensityMatrixSimulator` plus the trajectory-method `TrajectorySimulator`
+([How it works → Noise](how-it-works/noise.md)). Remaining work is the capacity
+line — out-of-core states past 33q, multi-Mac distribution over Thunderbolt, and a
+matrix-product-state simulator — see [the implementation plan](plan.md).

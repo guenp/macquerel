@@ -382,14 +382,17 @@ def measure_isolated(name, circuit, n, reps, double, timeout) -> float:
 # observed peak-to-base ratio of each backend's *transient* footprint:
 #   - metal:  in-place single buffer + tiny scratch                  -> ~1.6x
 #   - aer/qulacs: complex128 state + a result/copy                   -> ~2.5x
-#   - cpu:    tensordot allocates reshaped + transposed copies       -> ~4x
-#   - mlx:    lazy graph holds many full-width intermediates at once,
-#             plus a pool cache it never returns to the OS. Calibrated
-#             from the fact that mlx @ 30q (8 GiB base) drove a 128 GiB
-#             machine into swap, i.e. peak >= ~16x base for deep circuits.
+#   - cpu:    in-place chunked apply since Step 39 (was ~4x tensordot
+#             copies; measured 1.03x at 24-28q)                      -> ~1.5x
+#   - mlx:    lazy graph holds a bounded set of full-width intermediates,
+#             plus a pool cache it never returns to the OS mid-run. Was 16x
+#             (calibrated from mlx @ 30q driving a 128 GiB machine into
+#             swap); Step 36 (register-resident monomial kernel + tight
+#             two-deep eval pipeline) cut the measured 24-28q peaks to
+#             ~5x of base — 6x keeps a safety margin.
 _PEAK_MULT = {
-    "macquerel-cpu": 4.0,
-    "macquerel-mlx": 16.0,
+    "macquerel-cpu": 1.5,
+    "macquerel-mlx": 6.0,
     "macquerel-metal": 1.6,
     "aer": 2.5,
     "qulacs": 2.5,

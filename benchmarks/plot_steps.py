@@ -60,10 +60,13 @@ def load_steps(data_dir: Path):
     """-> {step: {backend: {(circuit, q): secs}}}, ordered per STEP_ORDER."""
     by_step: dict[str, dict[str, dict]] = defaultdict(dict)
     commits: dict[str, str] = {}
+    wanted = set(STEP_ORDER)
     for path in sorted(data_dir.glob("step*.json")):
         doc = json.loads(path.read_text())
+        if "results" not in doc:
+            continue
         step = doc.get("step")
-        if step is None:
+        if step not in wanted:
             continue
         commits[step] = doc.get("commit", "?")
         for circuit, by_backend in doc["results"].items():
@@ -72,7 +75,6 @@ def load_steps(data_dir: Path):
                 for q, secs in series:
                     cell[(circuit, int(q))] = secs
     steps = [s for s in STEP_ORDER if s in by_step]
-    steps += [s for s in sorted(by_step) if s not in steps]
     return steps, dict(by_step), commits
 
 

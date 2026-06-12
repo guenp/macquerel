@@ -105,7 +105,10 @@ down to two identities of the vectorization (for row-major flattening,
 
 - **Unitary gate** `ρ → UρU†`: apply `U` to the gate's *ket* axes, then `conj(U)` to
   the matching *bra* axes — two ordinary `apply_matrix` calls on targets `[t]` and
-  `[t+n]`. Controls shift the same way.
+  `[t+n]`. Controls shift the same way. Narrow control-free gates instead apply the
+  combined `U ⊗ conj(U)` superoperator to ket+bra axes at once — one full-state pass
+  instead of two, gated by gate kind (diagonal ≤4q, monomial ≤3q, dense ≤2q; wider
+  doubled gates lose more in the kernel than the saved pass returns).
 - **Kraus channel**: the operator-sum becomes a single matrix on the doubled space —
   the **superoperator** `Σₖ Kₖ ⊗ conj(Kₖ)` — applied to the channel's ket+bra axes
   in *one* dense `apply_matrix` call (`noise.channel_superoperator`). For a 1-qubit
@@ -115,8 +118,11 @@ down to two identities of the vectorization (for row-major flattening,
   view, so sampling never materializes the full matrix on the host.
 - **Purity**: for Hermitian ρ, `tr(ρ²) = Σᵢⱼ|ρᵢⱼ|²` — the squared norm of the
   vector, one BLAS dot.
-- **Expectation** `tr(ρP)`: `vec(ρP) = (I ⊗ Pᵀ) vec(ρ)` — apply each Pauli
-  transposed to the *bra* axes and sum the diagonal.
+- **Expectation** `tr(ρP)`: a Pauli string is a monomial matrix — one unit-magnitude
+  entry per row — so the trace needs exactly one element of ρ per row index:
+  `tr(ρP) = Σᵢ phase(i) · ρ[i, i⊕mask]`, a strided gather off the zero-copy host
+  view per term. No full readback, no state-sized temporaries (which at n=16 would
+  have been ~96 GB).
 
 Nothing in the backends changed: the Metal in-place kernels, the MLX graph, gate
 fusion (resolved at the doubled qubit count, with channels acting as fusion
@@ -141,14 +147,33 @@ The doubled state is the whole story of the cost: an n-qubit density matrix **is
        16                32q            32 GiB             metal ceiling
 ```
 
-So noisy simulation tops out at 16 qubits (Metal, a 32 GiB state — measured 6.0 s for
-a noisy 16-qubit GHZ, sitting exactly on the theoretical memory line; the dashed
-series in `benchmarks/data/memory.png`). Quadratic-in-state-size cost is the
-fundamental price of exact noise simulation. The planned escape hatch for larger
-noisy circuits is the **quantum-trajectory** method [\[5\]](#references) (Step 37 on the
-[roadmap](../plan.md)): unravel the channel into stochastic pure-state trajectories,
-each a normal 2ⁿ statevector run, and average — trading exactness for samples, and
-the 4ⁿ for K·2ⁿ.
+So exact noisy simulation tops out at 16 qubits (Metal, a 32 GiB state — measured
+6.0 s for a noisy 16-qubit GHZ, sitting exactly on the theoretical memory line; the
+dashed series in `benchmarks/data/memory.png`). Quadratic-in-state-size cost is the
+fundamental price of exact noise simulation.
+
+## Past the density-matrix wall: `TrajectorySimulator`
+
+The escape hatch for larger noisy circuits is the **quantum-trajectory**
+(Monte-Carlo wavefunction) method [\[5\]](#references), shipped as
+`TrajectorySimulator`: unravel each channel into stochastic pure-state trajectories
+— sample *one* Kraus operator per channel with its Born probability
+`pₖ = ⟨ψ|Kₖ†Kₖ|ψ⟩`, apply it, renormalize — and average over trajectories. Each
+trajectory is a normal 2ⁿ statevector run on the existing backends, so the 4ⁿ cost
+becomes T·2ⁿ time at 2ⁿ memory, exact in expectation with statistical error
+~`1/√T`. Two implementation points keep it at true statevector scale: every
+built-in channel has *diagonal* effect operators `Kₖ†Kₖ`, so the jump probabilities
+come from a single `abs2sum` marginal — no state copies, compatible with Metal's
+in-place buffer — and trajectories reset one allocated state in place rather than
+reallocating per run, keeping the footprint constant in trajectory count. Measured:
+a noisy **30-qubit** GHZ (a 2⁶⁰-amplitude density matrix, forever out of reach)
+runs at ~10 s/trajectory on Metal.
+
+```python
+sim = TrajectorySimulator(trajectories=200, seed=7)
+counts = sim.run(circuit, shots=1000)      # shots spread across trajectories
+probs = sim.probabilities(circuit)         # averaged over trajectories
+```
 
 ## References
 

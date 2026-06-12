@@ -78,7 +78,7 @@ commute with the gates around them — see [Noise](noise.md)).
 
 The diagonal / permutation / dense classification from
 [Applying gates](applying-gates.md#not-all-gates-cost-the-same-diagonal-permutation-dense)
-is itself the second lever. Two examples of how it played out in this codebase:
+is itself the second lever. Three examples of how it played out in this codebase:
 
 - The **MLX diagonal path** originally built a full 2ⁿ gather table (k shift/or
   passes to compute a per-amplitude row index, then a full-width phase gather).
@@ -90,6 +90,15 @@ is itself the second lever. Two examples of how it played out in this codebase:
   circuits. A custom `mx.fast.metal_kernel` with the Metal backend's
   one-thread-per-group design (no permutation in either direction) bought 1.16–1.61×
   on random circuits.
+- The **MLX permutation path** built its gather indices as full-width graph arrays —
+  ~5 GiB of uint32 intermediates per fused 4-qubit permutation at 28q, several alive
+  at once in the lazy graph. Computing the indices in registers with the same
+  one-thread-per-group kernel design (plus eval backpressure and pool release at
+  observation boundaries) cut MLX's peak memory from ~20× the state to ~3–5× and
+  made every measured cell faster (GHZ@28q 7.9×) — and the same bytes-moved logic
+  applies on the *CPU*: replacing tensordot's out-of-place copies with an in-place
+  chunked gather→GEMM→scatter cut its peak from ~3× to ~1.03× at up to 1.7× the
+  speed. Fewer bytes is the whole game, on every engine.
 
 ## Killing fixed costs: the small-n and dispatch story
 
@@ -99,8 +108,9 @@ mechanisms keep those fixed costs off the per-gate path:
 - **Metal batched command encoding** — one commit + one CPU↔GPU sync per observation
   boundary instead of per gate (encode up to 256 dispatches into one command buffer).
 - **MLX lazy evaluation** — graph building costs microseconds per gate; the
-  `async_eval` cadence (every 16 gates at ≥24q) keeps the GPU busy *and* bounds how
-  many intermediates the graph holds live.
+  `async_eval` cadence (every 16 gates at ≥24q, every 2 with two-deep backpressure
+  above 26q) keeps the GPU busy *and* bounds how many intermediates the graph holds
+  live.
 - **Construction caching** — Metal's device/queue/pipelines are process-wide
   singletons (7.5 ms → ~30 µs per backend construction); state buffers are pooled;
   constant buffers are cached by content; classification is memoized by matrix bytes.

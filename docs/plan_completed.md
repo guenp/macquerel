@@ -642,3 +642,123 @@ random noisy circuits, against `Simulator` on noiseless circuits
 (`rho == |psi><psi|`), and against analytic channel formulas; physicality
 (trace, hermiticity, positivity, purity decay) holds across all three backends
 (`tests/test_density.py`, `tests/test_noise.py`).
+
+## v0.3.x — RAM usage candidates (Steps 36-40)
+
+> In progress on branch `perf/v0.3.x-ram`; remaining steps tracked in
+> [`plan.md`](plan.md).
+
+### Step 36: MLX monomial kernel + eval cadence + pool release ✅ (`3decb13`) — peaks 19-25× → 3-5×, ghz@24-28 6.5-7.9× faster
+
+The measured 19-25× MLX memory peaks were mostly **not** the eval cadence: the
+monomial gather path built its source-index table on-device out of ~5 full-width
+uint32 lazy-graph intermediates per fused permutation gate — a 28q GHZ held
+10-12 GiB live for a 2 GiB state, and the lazy graph keeps every index
+temporary alive until evaluation. Three changes landed together:
+
+- **Register-resident monomial kernel** (the Step 33 design applied to
+  generalized permutations): one thread owns a group, computes its indices in
+  registers, reads the group through the gate's row permutation, and applies
+  the per-row phase — the only full-width buffers are the input and output
+  state. The on-device gather path remains the k>6 fallback.
+- **Tight eval cadence with backpressure** above 26 effective qubits:
+  `async_eval` every 2 gates (was 16), blocking on the checkpoint from one
+  interval ago before kicking the next. The blocking half matters because
+  `async_eval` alone never blocks — a shallow circuit encodes its whole graph
+  before the GPU retires anything, keeping every intermediate live regardless
+  of cadence (measured: cadence alone only halved the peaks).
+- **Pool release at observation boundaries**, gated on the freed-buffer pool
+  exceeding ⅛ of unified memory; smaller pools stay warm. (An unconditional
+  clear cost qaoa@24q 2.4× in re-allocation; a 1 GiB threshold still paid it.)
+
+A/B (GHZ memory cells vs `benchmarks/data/memory.json` baseline): sv peaks drop
+3.5-3.8× — 28q 39.2 → 10.2 GiB (19.6× → 5.1× theory), 26q 9.15 → 2.65 GiB —
+and dm n=14 49.2 → 8.15 GiB. Newly fitting cells: sv 29q/30q at **3.0×**
+(12.1/24.2 GiB; 30q previously drove the machine into swap at ~16×) and the
+previously-skipped dm n=15 (32.2 GiB), both un-skipped by recalibrating
+`_PEAK_MULT` (mlx 16.0 → 6.0). Runtime improved in every measured cell
+(`benchmarks/data/steps/step36-baseline-0c4c9dc-mlx.json` vs
+`step36-3decb13-mlx.json`): ghz@24-28 6.5-7.9×, qft 2.1-2.6×, random 1.2-1.8×,
+qaoa par-1.09×. Buffer-donation audit: `MLXState` and the simulator hot path
+hold no extra state references; the per-n arange cache and the pending-eval
+checkpoint (cleared at boundaries) are the only retained arrays.
+
+### Step 37: `TrajectorySimulator` — Monte-Carlo wavefunction noise ✅ (`2b63036`) — noisy circuits at `2**n` memory, 30q GHZ 10.3 s/trajectory
+
+Noisy simulation without the density matrix's `4**n` cost: each trajectory evolves
+an ordinary statevector; every Kraus channel applies one operator sampled with the
+Born probability `p_k = <psi|K_k^dagger K_k|psi>`, then renormalizes. Exact in
+expectation (Mølmer–Castin–Dalibard); error ~`1/sqrt(trajectories)`. Reuses the
+backends, `ChannelOp`s, and fusion (channels stay barriers) unchanged, with auto
+selection at the *statevector* count — noisy circuits reach the Metal range instead
+of the DM's n=16 cap. Jump probabilities need no state copies: every built-in
+channel has **diagonal** effect operators `E_k`, so all `p_k` come from one
+`abs2sum` marginal over the channel qubits (compatible with Metal's in-place
+state); arbitrary non-diagonal `kraus(...)` channels fall back to the channel-qubit
+reduced density matrix off a host view.
+
+Two measured-at-30q memory findings shaped the implementation: (a) a fresh seeded
+backend per trajectory pinned a new state buffer each time — now one derived-seed
+backend per call keeps reproducibility (the whole stream derives from `seed`) and
+shares the pool; (b) re-allocating the state per trajectory accumulated one
+state-sized footprint *per trajectory* — released multi-GiB MTLBuffers are
+reclaimed lazily by the driver and the Step 34 pool caps at 1 GiB — so trajectories
+reset the state in place through the zero-copy view (4 trajectories at 30q:
+47.3 → 21.5 GB peak, now constant in trajectory count). Demo: noisy 30q GHZ
+(depolarizing ×3), 4 trajectories, 4000 shots on Metal — 10.3 s/trajectory.
+Tests: noiseless exactness vs `Simulator`, stochastic agreement with
+`DensityMatrixSimulator` (probabilities, Pauli expectations, a non-diagonal-effect
+channel forcing the fallback), sampling semantics, seeding, backend parity
+(`tests/test_trajectory.py`).
+
+### Step 38: `expectation_pauli` via monomial gather ✅ (`fe6e0a7`) — 6.3× faster, 2.9× less peak (n=14, 4 terms, Metal)
+
+A Pauli string is monomial — `P|i> = phase(i)|i ^ mask>` with `mask` the X/Y bit
+pattern — so `tr(rho P) = sum_i phase(i) * rho[i, i ^ mask]` with
+`phase(i) = i**(#Y) * (-1)**popcount(i & zy_mask)`: one `2**n`-element gather off
+the zero-copy host view (CPU array / Metal unified-memory buffer; MLX pays one
+readback), like `probabilities` already does for the diagonal. Replaces the full
+`4**n` host readback plus a state-sized copy and two CPU gate applies per term —
+at the n=16 Metal ceiling the old path's transients alone were ~3 state sizes
+(~96 GB), past the machine's safe budget. `density_matrix()` gains an opt-in
+`copy=False` zero-copy view with the same mechanism. A/B at n=14 (GHZ +
+depolarizing, 4 mixed terms incl. Y, post-evolve call): 1.63 → 0.26 s and
+13.0 → 4.45 GB peak, identical values; correctness gated against `tr(rho P)` on
+the dense reference across backends (`tests/test_density.py`).
+
+### Step 39: CPU in-place chunked dense apply ✅ (`bb230f0`) — peaks 3.0× → 1.03×, runtime up to 1.70× faster
+
+The tensordot dense path made ~3 full state copies per gate (its internal input
+permutation, its output, and the non-contiguous reshape on write-back). Replaced
+with an in-place chunked apply: transpose the `(2,)*n` view so the target axes
+lead (a stride trick, no data movement), then loop bounded chunks over the
+non-target axes — gather a chunk into contiguous scratch, one GEMM into a second
+scratch, scatter back to the same positions (safe in place: each group depends
+only on its own amplitudes). Chunk size 2¹⁶ columns measured fastest (16 MiB of
+scratch at k=4); the controlled path reuses the same routine on its control-slice
+view. Stage (a) of the plan — `np.einsum(..., out=...)` — was prototyped and
+**rejected**: without `optimize` einsum loses BLAS (14× slower at 24q/k=4), with
+it the intermediates return. A/B: cpu peaks drop from 3.0× to ~1.03× of theory
+(28q GHZ 6.04 → 2.05 GiB, dm n=14 6.04 → 2.06 GiB) and runtime improves in every
+measured cell, growing with size — random@24q 1.70×, qaoa@22q 1.49×, ghz@22-24q
+1.33×, qft@24q 1.31× (`benchmarks/data/steps/step39-*.json`). `_PEAK_MULT` cpu
+4.0 → 1.5.
+
+### Step 40: single-pass ket⊗bra superoperator for narrow DM gates ✅ (`8361126`) — metal/cpu/mlx 1.0-1.09×, two variants rejected on measurement
+
+Control-free DM unitaries now apply as one `kron(U, conj(U))` gate over their
+paired ket+bra axes — one pass over the `4**n` state instead of two — when the
+doubled gate stays inside the backend fast envelope. Eligibility is per gate
+*kind*, because kron preserves it: diagonal superoperators stay diagonal
+(broadcast multiply; eligible to k=4, where the materialized `4**k × 4**k`
+matrix is still small), monomial stays monomial (k≤3 — doubled width 6, the MLX
+kernel cap), dense caps at k=2. Superoperators are memoized by matrix bytes;
+controlled gates keep two passes (a controlled-U's ket⊗bra product
+cross-multiplies its control projectors and is not a single controlled gate).
+The decisive findings were the **rejections**: dense superops at doubled width 6
+spill GPU registers (random_noise@12-14q on Metal **5× slower**), and capping
+the DM fusion width at the superop width (so every fused gate qualifies) loses
+more to extra passes than single-pass saves (ghz_noise on cpu −21%). The
+shipped kind-aware rule is a small, consistent win with no regressions: metal
+1.00-1.09×, cpu 1.02-1.07× (reps=7 where reps=3 looked noisy), mlx 0.99-1.06×
+(`benchmarks/data/steps/step40-*.json`).

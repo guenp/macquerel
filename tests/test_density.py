@@ -293,6 +293,45 @@ def test_expectation_pauli_noisy_analytic():
     assert abs(got - 0.8) < 1e-5
 
 
+def test_expectation_pauli_gather_matches_dense_reference(backend):
+    # Step 38 path: Y phases, mixed multi-qubit strings, identity, and a
+    # complex-weighted sum, checked against tr(rho P) on the dense reference.
+    qc = Circuit(3)
+    qc.h(0).cx(0, 1).ry(2, 0.7).depolarizing(1, 0.1).rz(0, 0.3).amplitude_damping(2, 0.2)
+    strings = [
+        (1.0, [("Y", 1)]),
+        (0.5, [("Y", 0), ("Y", 2)]),
+        (-2.0, [("X", 0), ("Y", 1), ("Z", 2)]),
+        (1.5, [("I", 1)]),
+        (0.25, [("Z", 1), ("X", 2)]),
+    ]
+    rho = reference_density_matrix(qc)
+    from macquerel.gates import I as I_gate
+    from macquerel.gates import X, Y, Z
+
+    mats = {"X": X(), "Y": Y(), "Z": Z(), "I": I_gate()}
+    expected = []
+    for coeff, terms in strings:
+        per_qubit = [np.eye(2, dtype=complex) for _ in range(3)]
+        for ch, q in terms:
+            per_qubit[q] = mats[ch]
+        full = per_qubit[0]
+        for m in per_qubit[1:]:
+            full = np.kron(full, m)
+        expected.append(coeff * np.real(np.trace(rho @ full)))
+    got = DensityMatrixSimulator(backend=backend).expectation_pauli(qc, strings)
+    np.testing.assert_allclose(got, expected, atol=1e-5)
+
+
+def test_density_matrix_view_matches_copy(backend):
+    qc = Circuit(2)
+    qc.h(0).cx(0, 1).depolarizing(0, 0.1)
+    sim = DensityMatrixSimulator(backend=backend)
+    copied = sim.density_matrix(qc)
+    view = sim.density_matrix(qc, copy=False)
+    np.testing.assert_allclose(view, copied, atol=1e-6)
+
+
 # --- compiler interaction --------------------------------------------------------
 
 
