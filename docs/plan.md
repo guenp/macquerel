@@ -50,13 +50,26 @@ out-of-core backend" bullet into a concrete design.
 
 ### What transfers and what doesn't
 
-The workloads differ in one fundamental way: a query touches data *selectively* (cold
-blocks can sit on disk untouched), while a gate touches **every** amplitude — there is
-no cold data during a full-state pass, so a generic LRU buffer pool buys nothing.
-Naively backing the state with `np.memmap` and letting the OS page (the v0.3 sketch)
-inherits exactly this problem: the kernel evicts 16 KiB pages reactively, with no
-knowledge of the access plan, and a 34-qubit gate pass becomes random-fault-ordered
-I/O. What *does* transfer from DuckDB is everything around the buffer pool:
+DuckDB's buffer manager does two separable jobs. It is a **cache**: keep hot blocks
+in RAM, evict cold ones by LRU, fault blocks in on demand — necessary because a
+query's access pattern is unknown until it runs. And it is a **bounded-memory
+streaming mechanism**: a fixed budget, explicitly pinned working blocks, large
+sequential spill/reload I/O instead of random page faults.
+
+The caching job does *not* transfer. A cache earns its keep on skew — a query touches
+data selectively, so cold blocks can sit on disk untouched. A gate pass touches
+**every** amplitude exactly once: there is no cold data to leave behind and no reuse
+for a replacement policy to exploit, so a demand-paged cache degenerates to pure
+overhead (LRU is the textbook-worst policy for a cyclic scan — each block is evicted
+just before it is needed again). Naively backing the state with `np.memmap` and
+letting the OS page (the v0.3 sketch) fails for exactly this reason: the kernel is a
+generic reactive cache, evicting 16 KiB pages with no knowledge of the access plan,
+and a 34-qubit gate pass becomes random-fault-ordered I/O.
+
+The streaming job is what this design keeps — and because a gate's access pattern is
+known at *compile time* from its target qubits (unlike a query's), it can be kept in
+a stronger, policy-free form: no faulting, no eviction decisions, just a fixed
+schedule. Concretely, what transfers:
 
 1. **An explicit budget instead of passive paging.** A `memory_limit`-style knob
    (e.g. `MACQUEREL_MEMORY_LIMIT`, defaulting to today's min(0.45 × RAM, 64 GiB)
@@ -66,8 +79,8 @@ I/O. What *does* transfer from DuckDB is everything around the buffer pool:
    index-bit partitioning — the same scheme already planned for multi-Mac: split the
    state into 2^m chunks by the top m index bits. Gates on the low n−m **local**
    qubits act independently inside each chunk; only gates on the top m **global**
-   bits pair amplitudes across chunks. Unlike DuckDB, the access pattern is *known at
-   compile time* from the gate's target qubits — no adaptivity needed.
+   bits pair amplitudes across chunks. The chunk visit order falls straight out of
+   the gate's target qubits — static, not adaptive.
 3. **Maximize work per residency.** The unit of I/O is a "chunk episode": load a
    chunk (sequential multi-GiB read), apply *every* gate that can run before the next
    global-bit barrier (the existing fusion + commutation-aware grouping machinery,
@@ -86,7 +99,47 @@ I/O. What *does* transfer from DuckDB is everything around the buffer pool:
    spilling them. The analog: read-only passes (sampling, probabilities,
    expectation values) stream chunks without writing them back — half the I/O.
 
-### Feasibility numbers (this machine: 128 GiB RAM, 2 TB NVMe, ~6–8 GB/s sequential)
+### What replaces the buffer pool
+
+The pool's replacement is the Step 42 **three-buffer ring**: exactly three pinned
+chunk-sized RAM buffers — one being computed on, one being prefetched (the next chunk
+in the schedule, read sequentially while compute runs), one being written back (the
+previous chunk) — rotating roles as the schedule advances. It is a buffer pool
+collapsed to its degenerate case. What survives: *pinning* (a chunk never moves while
+the GPU is reading it) and the *budget* (3 × chunk size ≤ `MACQUEREL_MEMORY_LIMIT`
+fixes the partition count 2^m). What disappears: the cache. There is no hit/miss, no
+replacement policy, no demand faulting — "eviction" is the scheduled writeback of a
+chunk the plan is finished with, "admission" is the scheduled prefetch of the chunk
+the plan needs next.
+
+That also pins down *how* it helps, because it is not by avoiding I/O — an episode
+reads and writes the full state no matter what. The ring's entire contribution is
+**hiding** the I/O: with compute and both I/O directions overlapped, an episode costs
+max(compute, I/O) rather than their sum, and since local gate work runs at
+unified-memory bandwidth (~93 GiB/s measured full-state pass) while the NVMe sustains
+~7 GB/s, I/O is the roofline — the pipeline's one job is to keep the NVMe queue
+never idle.
+
+Relative to the shipped in-RAM backends, the genuinely new concepts are four —
+everything else is existing machinery re-targeted:
+
+1. **A memory budget** (`MACQUEREL_MEMORY_LIMIT`). Today allocation is
+   all-or-nothing: the state fits in RAM or the run fails.
+2. **A chunked state** (`ChunkedState`, Step 41): one logical state stored as 2^m
+   file-backed partitions split by top index bits, vs today's single contiguous
+   buffer.
+3. **The episode as the unit of cost** (Step 43). Today's cost unit is the per-gate
+   full-state pass and fusion minimizes passes; out of core, the unit is the chunk
+   *residency* — load once, run every gate up to the next global-bit barrier, write
+   once — and the same fusion + commutation-aware grouping machinery is re-aimed at
+   minimizing episodes (full-state I/O round-trips) instead.
+4. **The three-buffer ring** above.
+
+The remap pass (Step 44) is not new machinery either: it is the existing
+disabled-by-default `remap_qubits` pass, finally facing the ~13× bandwidth asymmetry
+it was built for (it lost its in-RAM A/B because no such asymmetry exists there).
+
+### Feasibility numbers (assuming a 128 GiB Mac with NVMe at ~6–8 GB/s sequential)
 
 | n | state (2ⁿ × 8 B) | fits | episode cost (read+write @ 7 GB/s) |
 |---|---|---|---|
@@ -94,7 +147,18 @@ I/O. What *does* transfer from DuckDB is everything around the buffer pool:
 | 34 | 128 GiB | NVMe | ~37 s |
 | 35 | 256 GiB | NVMe | ~75 s |
 | 36 | 512 GiB | NVMe | ~150 s |
-| 37 | 1 TiB | NVMe (~1.6 TB free) | ~5 min |
+| 37 | 1 TiB | NVMe | ~5 min |
+
+To be explicit about what kind of feature this is: **capacity, never speed**. There
+is no input where the out-of-core path beats the in-RAM path — when the state fits
+the budget, Step 41's bypass routes to today's backend untouched (Step 46 gates the
+ship on zero in-RAM regression). Per axis: **qubits** +1 to +4 (33q → 37q, bounded by
+free disk); **RAM** pinned to the budget regardless of state size — the state is not
+smaller, it lives on disk; **speed** strictly a cost, with a hard floor of ~13× per
+full-state pass (~93 GiB/s in RAM vs ~7 GB/s NVMe), ~2× more again when the pass
+writes back. The alternative the spilled path competes against is not "slower" — it
+is "fails to allocate". (The one piece of the line that *can* speed things up is
+Step 47's complex32: halving bytes per amplitude in a bandwidth-bound simulator.)
 
 So out-of-core execution buys **+1 to +4 qubits** of capacity at a slowdown set by the
 local/global structure of the circuit: GHZ at 34q is a handful of episodes (~minutes);
@@ -103,7 +167,8 @@ bit's *pairing*, only its phase — they are chunk-local at any width), spills c
 a random dense circuit on scattered qubits is the worst case and needs the remap step
 below to stay off the global bits. Note the asymmetry that makes scheduling decisive:
 local work runs at unified-memory bandwidth, global work at NVMe bandwidth —
-a ~50–100× gap, far steeper than the cache-blocking gap that lost remapping its
+a ~13× gap on measured numbers (~93 GiB/s effective full-state pass vs ~7 GB/s
+sequential NVMe), far steeper than the cache-blocking gap that lost remapping its
 single-machine A/B.
 
 ### Steps
@@ -138,9 +203,13 @@ single-machine A/B.
   wall time on the random-circuit benchmark at 34q.
 - **Step 45: optional lz4 writeback compression** — only after the raw pipeline works,
   add opt-in lz4 chunk compression on the writeback path with a raw fallback when the
-  ratio is poor. Gate it on wall time, not just ratio: structured states like GHZ may
-  compress nearly for free, but Haar-random chunks must short-circuit quickly enough
-  that failed compression does not disturb GPU/I/O overlap.
+  ratio is poor. Being lossless, its ceiling is information-theoretic, not a tooling
+  question: a structured state like GHZ is mostly zero bytes and compresses nearly
+  for free, but a Haar-random chunk is incompressible past ~1.1–1.2× — the mantissa
+  bits are effectively uniform random, and the only slack is in the exponents, which
+  Porter-Thomas concentration leaves a few bits of entropy. So gate it on wall time,
+  not just ratio, and make the raw fallback short-circuit quickly enough that failed
+  compression does not disturb GPU/I/O overlap.
 - **Step 46: out-of-core benchmark + ship gate** — extend `bench_memory.py` with a
   spilled series (peak RAM must respect the budget; report episodes and effective
   GB/s against the NVMe roofline) and a 34q GHZ/QFT/random wall-time table. Ship only
@@ -169,14 +238,21 @@ strongest published precedent for compressed full-state simulation (Wu et al.,
 *Full-state quantum circuit simulation by using data compression*, SC'19,
 [arXiv:1810.14582](https://arxiv.org/abs/1810.14582), which kept the state
 compressed in memory, decompressing blocks on the fly, and reached a 61-qubit
-Grover), but a poor fit here for now: SZ/ZFP throughput is ~1-5 GB/s per CPU core
-(below the NVMe without multithreading or a Metal port — ZFP has CUDA kernels, no
-Metal), the error bound is consumed once per compress/decompress cycle and every
-chunk episode is a cycle, and the ratio evaporates on Haar-random states — exactly
-the circuits that need spilling most. Also deferred: **an in-RAM "blocked backend"
+Grover), but a poor fit here for now. Unlike lossless coding, lossy compression
+*does* keep working on dense Haar-random states — truncating mantissas is exactly
+how high-entropy floats compress, regardless of structure — so the objection is not
+the ratio in principle but the practical terms: SZ/ZFP throughput is ~1-5 GB/s per
+CPU core (below the NVMe without multithreading or a Metal port — ZFP has CUDA
+kernels, no Metal), the error bound is consumed once per compress/decompress cycle
+and every chunk episode is a cycle, and on random states the ratio settles toward
+the precision-reduction floor — at which point it is buying the same bytes as Step
+47's complex32, at lower speed and with an adaptive error model instead of a fixed,
+characterizable one. The credible way back in is a **zfp fixed-rate Metal port**
+(guaranteed ratio, bounded error, GPU speed), which would slot into Step 45's
+wall-time gate unchanged. Also deferred: **an in-RAM "blocked backend"
 as its own feature** — partitioning never reduces the bytes a state occupies, and
 Metal already stores the state once at a measured ~1.0x of theory, so in-RAM block
-partitioning adds zero qubits on this machine; it falls out of Step 41 anyway as
+partitioning adds zero qubits; it falls out of Step 41 anyway as
 the trivial budget ≥ state bypass. (A gate on a global bit is a 2×2 *block matrix
 multiply* over chunk pairs at identical traffic to a local pass, so the in-RAM
 partitioning tax is ~zero — but so is the benefit.) One conditional exception: an
@@ -188,7 +264,8 @@ to matter. Also deferred: **changed representations** — matrix product states 
 have their own roadmap line ([v0.4](#v04-matrix-product-state-simulator) below);
 decision diagrams and sparse amplitude dictionaries remain deferred without one —
 and a **general buffer pool with LRU eviction** (no selectivity in the access
-pattern — the streaming three-buffer pipeline is the whole pool). The multi-Mac
+pattern, so there is nothing to cache — see "What replaces the buffer pool" above;
+the three-buffer ring is the whole pool). The multi-Mac
 item (v0.3) and this section share the index-bit partitioning compiler work;
 whichever ships first pays most of the cost of the second.
 
@@ -208,7 +285,7 @@ this is a new regime (50–1000+ low-entanglement qubits: GHZ/Clifford-lite stat
 QFT, shallow VQE/QAOA ansätze, 1D Trotterized time evolution), not a replacement for
 the statevector simulator.
 
-Design constraints, from a back-of-envelope study on this machine:
+Design constraints, from a back-of-envelope study:
 
 - **Sibling-simulator pattern.** Same `Circuit` API, alongside
   `DensityMatrixSimulator` and `TrajectorySimulator`. χ capped with **exact tracked
