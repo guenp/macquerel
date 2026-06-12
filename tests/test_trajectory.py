@@ -133,6 +133,16 @@ def test_seeded_runs_are_reproducible():
     assert a == b
 
 
+def test_seeded_instance_is_reproducible_across_calls():
+    qc = noisy_circuit()
+    qc.measure_all()
+    sim = TrajectorySimulator(backend="cpu", seed=42, trajectories=32)
+    assert sim.run(qc, shots=500) == sim.run(qc, shots=500)
+    np.testing.assert_array_equal(
+        sim.probabilities(qc, trajectories=16), sim.probabilities(qc, trajectories=16)
+    )
+
+
 def test_invalid_args_raise():
     with pytest.raises(ValueError, match="backend"):
         TrajectorySimulator(backend="gpu")

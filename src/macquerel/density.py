@@ -182,7 +182,12 @@ class DensityMatrixSimulator:
                     raise ValueError(f"unknown Pauli {pauli_char!r}")
             gathered = vec[idx * dim + (idx ^ x_mask)]
             if zy_mask:
-                signs = 1.0 - 2.0 * (np.bitwise_count(idx & zy_mask) & 1)
+                # Popcount parity via a shift-xor fold: np.bitwise_count needs
+                # NumPy >= 2.0 and the project floor is 1.24.
+                parity = idx & zy_mask
+                for shift in (32, 16, 8, 4, 2, 1):
+                    parity ^= parity >> shift
+                signs = 1.0 - 2.0 * (parity & 1)
                 total = np.sum(signs * gathered)
             else:
                 total = np.sum(gathered)

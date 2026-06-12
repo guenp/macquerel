@@ -160,6 +160,10 @@ class TrajectorySimulator:
         n = circuit.n_qubits
         name = self.backend_name if self.backend_name != "auto" else _select_backend(n)
         fused = fuse_gates(circuit, backend=name)  # channels/measures are barriers
+        if self._seed is not None:
+            # Restart the stream per call so repeated calls on one seeded
+            # simulator are bit-identical, mirroring `Simulator`.
+            self._rng = np.random.default_rng(self._seed)
         backend = self._backend_for(name)
         state = None
         for t in range(t_total):
