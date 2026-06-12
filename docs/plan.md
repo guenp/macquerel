@@ -1,13 +1,9 @@
 # macquerel Implementation Plan — Remaining Work
 
 macquerel is a quantum state-vector simulator targeting Apple Silicon's unified-memory
-architecture. The v0.1 and v0.2 lines (CPU/MLX/Metal backends, gate fusion + qubit
-remapping, expectation values, automatic backend selection, Cirq/Qiskit adapters, the full
-benchmarking suite, and the shot-batch / fusion-width autotuners) are **complete**, as is
-the v0.2.x+ performance-candidate line (MLX broadcast diagonal + custom dense kernel,
-Metal small-n floor, per-chip tier autotuning, and the `BatchedSimulator`) — see
-[`plan_completed.md`](plan_completed.md) for the shipped record, including the MLX/Metal
-performance findings and the per-step A/B results.
+architecture. Completed implementation and optimization work lives in
+[`plan_completed.md`](plan_completed.md), including the per-step A/B results and design
+notes for completed lines.
 
 This document tracks only work that has **not** been implemented yet. Steps keep their
 original numbering for continuity with the completed record.
@@ -24,7 +20,7 @@ and changes that lose their A/B, like default qubit remapping, are left disabled
 reverted rather than folded into the hot path.
 
 Implemented steps are moved to [`plan_completed.md`](plan_completed.md), where each
-shipped optimization records its commit ID alongside the measured A/B result and design
+completed optimization records its commit ID alongside the measured A/B result and design
 notes.
 
 ---
@@ -37,52 +33,6 @@ notes.
   below — passive OS paging turned out to be the wrong mechanism.
 - **Multi-Mac over Thunderbolt** — distributed state vector using index-bit partitioning
   across machines.
-
-> `BatchedSimulator` (batched small-circuit simulation) shipped early as Step 31 of the
-> v0.2.x+ line, and **Noise channels / density matrices** (`DensityMatrixSimulator`
-> with Kraus-operator channels) shipped as the first v0.3 feature — see
-> [`plan_completed.md`](plan_completed.md).
-
----
-
-## v0.3.x — RAM usage candidates — **all shipped** (Steps 36-40)
-
-The whole line is implemented on branch `perf/v0.3.x-ram`; per-step results live in
-[`plan_completed.md`](plan_completed.md). Peak-to-theory multipliers now stand at
-**metal 1.0×** (in-place), **cpu ~1.03×** (was 3.0× before Step 39), **mlx 3-5×**
-(was 19-25× before Step 36), and noisy simulation past the DM's n=16 cap is covered
-by the trajectory simulator (Step 37).
-
-> **Step 36 (MLX monomial kernel + eval cadence + pool release) shipped** as
-> `3decb13` — peaks 19-25× → 3-5×, every runtime cell improved, mlx sv 29-30q and
-> dm n=15 un-skipped; see [`plan_completed.md`](plan_completed.md).
-
-> **Step 37 (`TrajectorySimulator`) shipped** as `2b63036` — Monte-Carlo wavefunction
-> noise at `2**n` memory, all built-in channels jump-sampled from one `abs2sum`
-> marginal (no state copies); noisy 30q GHZ on Metal at 10.3 s/trajectory, footprint
-> constant in trajectory count; see [`plan_completed.md`](plan_completed.md).
-
-> **Step 38 (`expectation_pauli` via monomial gather) shipped** as `fe6e0a7` —
-> n=14/4-term call 6.3× faster at 2.9× less peak, `density_matrix(copy=False)`
-> added; see [`plan_completed.md`](plan_completed.md).
-
-> **Step 39 (CPU in-place chunked dense apply) shipped** as `bb230f0` — peaks
-> 3.0× → 1.03× of theory, runtime up to 1.70× faster, einsum stage (a) rejected
-> on measurement; see [`plan_completed.md`](plan_completed.md).
-
-> **Step 40 (single-pass ket⊗bra superoperator) shipped** as `8361126` — kind-aware
-> eligibility (diagonal k≤4 / monomial k≤3 / dense k≤2), 1.0-1.09× across backends;
-> dense width-6 superops and fusion-width capping both rejected on measurement; see
-> [`plan_completed.md`](plan_completed.md).
-
-Considered and rejected: **Hermitian half-storage** (a clean 2× — rho is determined by
-its upper triangle — but it breaks the "reuse the statevector backends unchanged"
-design; every kernel would need a triangular-layout variant) and **low-rank ensembles**
-(`rho = sum_i p_i |psi_i><psi_i|`, memory `r * 2**n` — dominated by trajectories, which
-get the same memory profile without eigenvalue-truncation machinery). The
-**memory-mapped out-of-core backend** (v0.3, above) composes with all of these — notably
-Metal's `newBufferWithBytesNoCopy:` accepts page-aligned mmap'd memory, so an
-NVMe-backed density matrix at n≥17 may be feasible on the GPU path too.
 
 ---
 
