@@ -29,14 +29,14 @@ notes.
 
 - **Memory-mapped out-of-core backend** — state vector backed by an NVMe file via
   `np.memmap`, for single large runs past DRAM capacity. Investigated and expanded
-  into the explicit spill-to-disk design under [v0.4](#v04-spill-to-disk-statevectors-duckdb-style-out-of-core-execution)
+  into the explicit spill-to-disk design under [v0.3.x](#v03x-spill-to-disk-statevectors-duckdb-style-out-of-core-execution)
   below — passive OS paging turned out to be the wrong mechanism.
 - **Multi-Mac over Thunderbolt** — distributed state vector using index-bit partitioning
   across machines.
 
 ---
 
-## v0.4 — Spill-to-disk statevectors (DuckDB-style out-of-core execution)
+## v0.3.x — Spill-to-disk statevectors (DuckDB-style out-of-core execution)
 
 [DuckDB](https://duckdb.org/2024/07/09/memory-management.html) runs analytical queries
 on larger-than-memory data by giving every operator a fixed memory budget
@@ -147,7 +147,7 @@ single-machine A/B.
   if 34q runs end-to-end under the default budget without swap and the in-RAM path
   shows zero regression. SSD-endurance note in the docs: an episode writes the full
   state (128 GiB at 34q), so deep unfused circuits are a TBW consideration —
-  documented, not engineered around, in v0.4.
+  documented, not engineered around, in v0.3.x.
 - **Step 47: block-float `complex32` states** — opt-in half-precision amplitude
   storage (`dtype="complex32"`): two float16s per amplitude plus one float32
   max-magnitude scale per chunk. The per-chunk scale is load-bearing, not a nicety:
@@ -161,7 +161,7 @@ single-machine A/B.
   roughly with √depth — fine for sampling and expectation values at moderate depth,
   not for amplitude-level verification. Ship opt-in only; gate with the existing
   differential tests against complex64 and publish a fidelity-vs-depth table.
-  **This is the cheapest +1 qubit of the v0.4 line** and depends only on
+  **This is the cheapest +1 qubit of the v0.3.x line** and depends only on
   chunk-granular scaling, not on the disk pipeline — it can ship before Steps 41–44.
 
 Considered and deferred: **error-bounded lossy compression (SZ/ZFP)** — the
@@ -185,7 +185,7 @@ partitioning tax is ~zero — but so is the benefit.) One conditional exception:
 peak multiplier toward ~1× (lazy-graph temporaries become chunk-sized) — same
 scheduler, RAM tier; only worth building if MLX-only machines (no PyObjC) turn out
 to matter. Also deferred: **changed representations** — matrix product states now
-have their own roadmap line ([v0.5](#v05-matrix-product-state-simulator) below);
+have their own roadmap line ([v0.4](#v04-matrix-product-state-simulator) below);
 decision diagrams and sparse amplitude dictionaries remain deferred without one —
 and a **general buffer pool with LRU eviction** (no selectivity in the access
 pattern — the streaming three-buffer pipeline is the whole pool). The multi-Mac
@@ -194,9 +194,9 @@ whichever ships first pays most of the cost of the second.
 
 ---
 
-## v0.5 — Matrix product state simulator
+## v0.4 — Matrix product state simulator
 
-Everything in v0.4 buys single qubits at the 2ⁿ byte wall (complex32 +1, spilling
+Everything in v0.3.x buys single qubits at the 2ⁿ byte wall (complex32 +1, spilling
 +1 to +4). A **changed representation** is the only lever that escapes it: an
 `MPSSimulator` stores the state as a chain of n tensors of shape `(χ, 2, χ)`, where
 the bond dimension χ measures entanglement across each cut — memory is
