@@ -29,7 +29,6 @@ All notable changes to this project are documented here, following
   when it exceeds an eighth of unified memory. MLX now reaches 29-30q statevectors
   and 15-qubit density matrices without swap, and every measured runtime cell
   improved (GHZ@24-28q 6.5-7.9x, QFT 2.1-2.6x, random 1.2-1.8x).
-
 - Refresh the large statevector and memory benchmark artifacts after the v0.3.x RAM
   line: the MLX statevector series now extends to 30 qubits (previously skipped for
   memory) and the density-matrix series to n=15; measured peak multipliers drop to
@@ -58,6 +57,16 @@ All notable changes to this project are documented here, following
   channels via `kraus(qubits, operators)`, validated for trace preservation at build
   time. Channels act as gate-fusion barriers; the statevector `Simulator` and
   `BatchedSimulator` reject noisy circuits with a pointer to `DensityMatrixSimulator`.
+- Add per-cell GPU-utilization sampling to `benchmarks/bench_memory.py` (device-wide
+  busy-percent from the IORegistry, no sudo) with a utilization panel in the memory
+  chart, and document GPU usage: every simulation runs on Apple Silicon's single
+  GPU — MLX and Metal are two paths to the same device — and the measured curves
+  show cpu cells at the idle baseline and the GPU saturating from 24q (MLX) / 29q
+  (Metal) / n=13 density-matrix cells.
+- Add a "How it works" documentation section: a gentle but thorough introduction to
+  statevector simulation and the library's internals — gate application and gate-kind
+  fast paths, the three backend designs, the optimization playbook, and the vectorized
+  density-matrix noise simulation — with diagrams and literature references.
 - Add `benchmarks/bench_density.py` (runtime across backends/qubit counts on noisy GHZ
   and random-brickwork circuits) and a density-matrix series in
   `benchmarks/bench_memory.py`; both budget-gate cells at min(0.45 × RAM, 64 GiB).

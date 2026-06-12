@@ -61,6 +61,9 @@ Each backend wins a different regime:
 
 See [Backends](backends.md) for the measurements behind these tiers, why the GPU
 loses below 16q, how circuit structure moves the MLX/Metal gap, and tuning tips.
+For a guided tour of the internals — what statevector simulation is, how each
+backend applies gates, and how the optimizations work — see
+[How it works](how-it-works/index.md).
 For parameter sweeps of many small circuits, see `BatchedSimulator` — it packs the
 whole sweep into batched array ops (up to 47× over a per-circuit loop).
 
