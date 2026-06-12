@@ -28,16 +28,9 @@ the state to the host, collapsing there, and writing it back — so collapse-mod
 MCM pays two full PCIe-free-but-not-free unified-memory round trips per round.
 This benchmark exists to quantify exactly that.
 
-The qubit sweep runs each backend to its ceiling (`MAX_QUBITS`): Metal 32,
-MLX 30 (int32 ShapeElem caps it at 2**30 amplitudes), CPU 25 for patience.
-Cells at >= LIGHT_QUBITS qubits switch to a light protocol — one rep, one
-trajectory, no warm-up — because they are bandwidth-bound multi-second (at
-32q, multi-minute) runs where dispatch noise and pipeline compilation are
-negligible and a warm-up would double the cost for nothing.
-
 Usage:
     uv run python benchmarks/bench_mcm.py
-    uv run python benchmarks/bench_mcm.py --qubits 5 13 21 --rounds 1 2 4 8 \
+    uv run python benchmarks/bench_mcm.py --distances 3 5 7 --rounds 1 2 4 8 \
         --json benchmarks/data/mcm.json --plot benchmarks/data/mcm.png
     uv run python benchmarks/bench_mcm.py --replot   # redraw plot from JSON
 """
@@ -64,28 +57,16 @@ MODE_STYLES = {"sample": "--", "collapse": "-"}
 # at line styles.
 MODE_MARKERS = {"sample": "^", "collapse": "o"}
 
-# Per-backend qubit ceilings for the qubit sweep: Metal's kernels handle 32q
-# (a 32 GiB complex64 state — see benchmarks/data/large), MLX's int32 ShapeElem
-# rejects >= 2**31 amplitudes so it stops at 30, and the CPU cap is patience,
-# not memory.
-MAX_QUBITS = {"cpu": 25, "mlx": 30, "metal": 32}
-# At and above this qubit count, cells run the light protocol: one rep, one
-# collapse trajectory, no warm-up (see module docstring).
-LIGHT_QUBITS = 24
 
-
-def rep_code_circuit(n_qubits: int, rounds: int) -> Circuit:
-    """Repetition-code syndrome extraction on `n_qubits`: distance
-    d = (n+1)//2 data qubits on even indices, d-1 ancillas on odd indices.
-    An even n leaves the last qubit idle — it pads the state to the size the
-    sweep asks for (e.g. Metal's 32q ceiling) without touching the gate
-    stream. Each round entangles every ancilla with its two data neighbours
-    and measures all ancillas mid-circuit. (No reset op exists; a real
-    experiment would reset ancillas, but the collapsed post-measurement state
-    makes the next round's gate stream identical, so timing is unaffected.)
+def rep_code_circuit(distance: int, rounds: int) -> Circuit:
+    """Distance-d repetition code: d data qubits (even indices) and d-1
+    ancillas (odd indices). Each round entangles every ancilla with its two
+    data neighbours and measures all ancillas mid-circuit. (No reset op exists;
+    a real experiment would reset ancillas, but the collapsed post-measurement
+    state makes the next round's gate stream identical, so timing is unaffected.)
     """
-    n = 2 * ((n_qubits + 1) // 2) - 1  # largest odd width that fits
-    qc = Circuit(n_qubits)
+    n = 2 * distance - 1
+    qc = Circuit(n)
     ancillas = list(range(1, n, 2))
     qc.h(0)  # seed some superposition so measurement probabilities are non-trivial
     for q in range(0, n - 2, 2):
@@ -98,9 +79,8 @@ def rep_code_circuit(n_qubits: int, rounds: int) -> Circuit:
     return qc
 
 
-def time_call(fn, reps: int, warmup: bool = True) -> float:
-    if warmup:
-        fn()  # warm-up (kernel/pipeline compilation, buffer pools)
+def time_call(fn, reps: int) -> float:
+    fn()  # warm-up (kernel/pipeline compilation, buffer pools)
     best = float("inf")
     for _ in range(reps):
         t0 = time.perf_counter()
@@ -142,18 +122,18 @@ def run_collapse(backend, ops, n: int, shots: int) -> None:
 def measure_cell(backend_name: str, mode: str, qc: Circuit, args) -> float:
     """Seconds for one (backend, mode, circuit) cell. collapse mode is
     normalized to seconds per shot; sample mode is one full run() call."""
-    light = qc.n_qubits >= LIGHT_QUBITS
-    reps = 1 if light else args.reps
+    # A collapse shot costs ~10 s+ past 24 qubits; one rep of two trajectories
+    # keeps the largest cells under a minute without touching the small ones.
+    big = qc.n_qubits >= 24
+    reps = 1 if big else args.reps
+    traj_shots = min(2, args.traj_shots) if big else args.traj_shots
     if mode == "sample":
         sim = Simulator(backend=backend_name)
-        return time_call(lambda: sim.run(qc, shots=args.shots), reps, warmup=not light)
-    traj_shots = 1 if light else args.traj_shots
+        return time_call(lambda: sim.run(qc, shots=args.shots), reps)
     backend = _make_backend(backend_name, "complex64", None)
     fused = fuse_gates(qc, backend=backend_name)
     ops = [op for op in fused.ops if isinstance(op, (Gate, MeasureOp))]
-    secs = time_call(
-        lambda: run_collapse(backend, ops, qc.n_qubits, traj_shots), reps, warmup=not light
-    )
+    secs = time_call(lambda: run_collapse(backend, ops, qc.n_qubits, traj_shots), reps)
     return secs / traj_shots
 
 
@@ -161,13 +141,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument(
-        "--qubits",
-        type=int,
-        nargs="+",
-        default=[5, 9, 13, 17, 21, 25, 30, 32],
-        help="qubit-sweep sizes; each backend stops at its MAX_QUBITS ceiling",
-    )
+    ap.add_argument("--distances", type=int, nargs="+", default=[3, 5, 7, 9, 11, 13])
     ap.add_argument("--rounds", type=int, nargs="+", default=[1, 2, 4, 8, 16])
     ap.add_argument("--fixed-distance", type=int, default=7, help="distance for the rounds sweep")
     ap.add_argument("--fixed-rounds", type=int, default=8, help="rounds for the qubit sweep")
@@ -214,7 +188,7 @@ def main() -> None:
             header += f" {b + '/' + m:>16}"
     print(header)
     for r in args.rounds:
-        qc = rep_code_circuit(2 * d - 1, r)
+        qc = rep_code_circuit(d, r)
         row = f"{r:>7} {r * (d - 1):>5}"
         for b in available:
             for m in args.modes:
@@ -232,15 +206,12 @@ def main() -> None:
         for m in args.modes:
             header += f" {b + '/' + m:>16}"
     print(header)
-    for n in args.qubits:
-        d = (n + 1) // 2
-        qc = rep_code_circuit(n, r)
+    for d in args.distances:
+        n = 2 * d - 1
+        qc = rep_code_circuit(d, r)
         row = f"{n:>3} {d:>4}"
         for b in available:
             for m in args.modes:
-                if n > MAX_QUBITS[b]:
-                    row += f" {'-':>16}"
-                    continue
                 secs = measure_cell(b, m, qc, args)
                 results["data"]["qubits"].setdefault(b, {}).setdefault(m, []).append([n, secs])
                 row += f" {secs * 1e3:>14.2f}ms"
@@ -304,7 +275,7 @@ def make_plot(results: dict, path: str) -> None:
     axes[0].set_xlabel(f"syndrome-extraction rounds ({d - 1} ancilla MCMs each)")
     axes[0].set_title(f"vs MCM rounds — distance {d} ({2 * d - 1} qubits)")
     draw(axes[1], "qubits")
-    axes[1].set_xlabel("qubits (distance d = (n+1)//2)")
+    axes[1].set_xlabel("qubits (n = 2d-1)")
     axes[1].set_title(f"vs qubit count — {cfg['fixed_rounds']} rounds")
     fig.suptitle("Mid-circuit measurement: repetition-code syndrome extraction", y=1.0)
     fig.tight_layout()
