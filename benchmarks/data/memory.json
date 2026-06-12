@@ -33,312 +33,320 @@
   "measured": {
     "cpu": {
       "5": {
-        "footprint": 36029064,
-        "maxrss": 60473344
+        "footprint": 37405320,
+        "maxrss": 61849600
       },
       "6": {
-        "footprint": 36110984,
-        "maxrss": 60555264
+        "footprint": 37388936,
+        "maxrss": 61833216
       },
       "7": {
-        "footprint": 36242056,
-        "maxrss": 60686336
-      },
-      "8": {
-        "footprint": 36094600,
-        "maxrss": 60538880
-      },
-      "9": {
-        "footprint": 36209288,
-        "maxrss": 60653568
-      },
-      "10": {
-        "footprint": 36258416,
-        "maxrss": 60719104
-      },
-      "11": {
-        "footprint": 36225672,
-        "maxrss": 60669952
-      },
-      "12": {
-        "footprint": 36225672,
-        "maxrss": 60669952
-      },
-      "13": {
-        "footprint": 36225672,
-        "maxrss": 60669952
-      },
-      "14": {
-        "footprint": 36176520,
-        "maxrss": 60620800
-      },
-      "15": {
-        "footprint": 36127368,
-        "maxrss": 60571648
-      },
-      "16": {
         "footprint": 37372552,
         "maxrss": 61816832
       },
+      "8": {
+        "footprint": 37421704,
+        "maxrss": 61865984
+      },
+      "9": {
+        "footprint": 37339784,
+        "maxrss": 61784064
+      },
+      "10": {
+        "footprint": 37323400,
+        "maxrss": 61767680
+      },
+      "11": {
+        "footprint": 37503624,
+        "maxrss": 61947904
+      },
+      "12": {
+        "footprint": 37569160,
+        "maxrss": 62013440
+      },
+      "13": {
+        "footprint": 37454472,
+        "maxrss": 61898752
+      },
+      "14": {
+        "footprint": 37503624,
+        "maxrss": 61947904
+      },
+      "15": {
+        "footprint": 37503624,
+        "maxrss": 61947904
+      },
+      "16": {
+        "footprint": 37995144,
+        "maxrss": 62439424
+      },
       "17": {
-        "footprint": 39289504,
-        "maxrss": 63717376
+        "footprint": 39633568,
+        "maxrss": 64061440
       },
       "18": {
-        "footprint": 44630688,
-        "maxrss": 69058560
+        "footprint": 43778720,
+        "maxrss": 68206592
       },
       "19": {
-        "footprint": 49955488,
-        "maxrss": 74383360
+        "footprint": 50020976,
+        "maxrss": 74481664
       },
       "20": {
-        "footprint": 61325936,
-        "maxrss": 85786624
+        "footprint": 66945672,
+        "maxrss": 91389952
       },
       "21": {
-        "footprint": 86540936,
-        "maxrss": 110985216
+        "footprint": 79479456,
+        "maxrss": 103907328
       },
       "22": {
-        "footprint": 136938192,
-        "maxrss": 161333248
+        "footprint": 87786144,
+        "maxrss": 112214016
       },
       "23": {
-        "footprint": 237683480,
-        "maxrss": 262029312
+        "footprint": 125665976,
+        "maxrss": 150077440
       },
       "24": {
-        "footprint": 439042984,
-        "maxrss": 463290368
+        "footprint": 197067496,
+        "maxrss": 221446144
       },
       "25": {
-        "footprint": 841958600,
-        "maxrss": 866009088
+        "footprint": 322831176,
+        "maxrss": 347144192
       },
       "26": {
-        "footprint": 1647642376,
-        "maxrss": 1671299072
+        "footprint": 595559432,
+        "maxrss": 619741184
       },
       "27": {
-        "footprint": 3258895240,
-        "maxrss": 3281764352
+        "footprint": 1137034632,
+        "maxrss": 1160953856
       },
       "28": {
-        "footprint": 6481941640,
-        "maxrss": 6503235584
+        "footprint": 2202912904,
+        "maxrss": 2226307072
       }
     },
     "mlx": {
       "5": {
-        "footprint": 157041312,
-        "maxrss": 65044480
+        "footprint": 158139040,
+        "maxrss": 65503232
       },
       "6": {
-        "footprint": 157287072,
-        "maxrss": 65306624
+        "footprint": 158007968,
+        "maxrss": 65355776
       },
       "7": {
-        "footprint": 157352608,
-        "maxrss": 65372160
+        "footprint": 158220960,
+        "maxrss": 65552384
       },
       "8": {
-        "footprint": 157696648,
-        "maxrss": 65601536
+        "footprint": 158499488,
+        "maxrss": 65896448
       },
       "9": {
-        "footprint": 157532808,
-        "maxrss": 65388544
+        "footprint": 158188168,
+        "maxrss": 65585152
       },
       "10": {
-        "footprint": 157696696,
-        "maxrss": 65519616
+        "footprint": 158106272,
+        "maxrss": 65437696
       },
       "11": {
-        "footprint": 157696672,
-        "maxrss": 65372160
+        "footprint": 158450336,
+        "maxrss": 65814528
       },
       "12": {
-        "footprint": 158810784,
-        "maxrss": 65847296
+        "footprint": 158450312,
+        "maxrss": 65716224
       },
       "13": {
-        "footprint": 159498912,
-        "maxrss": 65798144
+        "footprint": 158401160,
+        "maxrss": 65519616
       },
       "14": {
-        "footprint": 161661600,
-        "maxrss": 65994752
+        "footprint": 158974624,
+        "maxrss": 65732608
       },
       "15": {
-        "footprint": 165560968,
-        "maxrss": 66306048
+        "footprint": 159859360,
+        "maxrss": 65929216
       },
       "16": {
-        "footprint": 173572768,
-        "maxrss": 66715648
+        "footprint": 161366664,
+        "maxrss": 66125824
       },
       "17": {
-        "footprint": 194429624,
-        "maxrss": 68468736
+        "footprint": 165610120,
+        "maxrss": 66748416
       },
       "18": {
-        "footprint": 232161976,
-        "maxrss": 70533120
+        "footprint": 175014560,
+        "maxrss": 69828608
       },
       "19": {
-        "footprint": 309658296,
-        "maxrss": 74645504
+        "footprint": 191906440,
+        "maxrss": 74104832
       },
       "20": {
-        "footprint": 498860704,
-        "maxrss": 83394560
+        "footprint": 233816712,
+        "maxrss": 82509824
       },
       "21": {
-        "footprint": 855687864,
-        "maxrss": 100286464
+        "footprint": 309412512,
+        "maxrss": 99336192
       },
       "22": {
-        "footprint": 1319650024,
-        "maxrss": 135446528
+        "footprint": 460391120,
+        "maxrss": 132808704
       },
       "23": {
-        "footprint": 1907147544,
-        "maxrss": 202817536
+        "footprint": 829817576,
+        "maxrss": 200130560
       },
       "24": {
-        "footprint": 2980823904,
-        "maxrss": 336855040
+        "footprint": 1501397856,
+        "maxrss": 334544896
       },
       "25": {
-        "footprint": 5262869560,
-        "maxrss": 605519872
+        "footprint": 2845328392,
+        "maxrss": 603684864
       },
       "26": {
-        "footprint": 9826502048,
-        "maxrss": 1142358016
+        "footprint": 2843952544,
+        "maxrss": 1139867648
       },
       "27": {
-        "footprint": 20564428960,
-        "maxrss": 2216050688
+        "footprint": 5528881312,
+        "maxrss": 2213625856
       },
       "28": {
-        "footprint": 42040249992,
-        "maxrss": 4363517952
+        "footprint": 10898575008,
+        "maxrss": 4361011200
+      },
+      "29": {
+        "footprint": 13045567136,
+        "maxrss": 8651964416
+      },
+      "30": {
+        "footprint": 25932716704,
+        "maxrss": 17241980928
       }
     },
     "metal": {
       "5": {
-        "footprint": 156762760,
-        "maxrss": 67469312
+        "footprint": 157942408,
+        "maxrss": 68648960
       },
       "6": {
-        "footprint": 156811936,
-        "maxrss": 67502080
+        "footprint": 158089888,
+        "maxrss": 68780032
       },
       "7": {
-        "footprint": 156598920,
-        "maxrss": 67305472
+        "footprint": 157909640,
+        "maxrss": 68616192
       },
       "8": {
-        "footprint": 156615328,
-        "maxrss": 67305472
+        "footprint": 158155424,
+        "maxrss": 68845568
       },
       "9": {
-        "footprint": 156861112,
-        "maxrss": 67534848
+        "footprint": 157991560,
+        "maxrss": 68698112
       },
       "10": {
-        "footprint": 156811960,
-        "maxrss": 67518464
+        "footprint": 158204600,
+        "maxrss": 68894720
       },
       "11": {
-        "footprint": 156861088,
-        "maxrss": 67551232
+        "footprint": 158089888,
+        "maxrss": 68796416
       },
       "12": {
-        "footprint": 156779192,
-        "maxrss": 67452928
+        "footprint": 158024352,
+        "maxrss": 68714496
       },
       "13": {
-        "footprint": 156779144,
-        "maxrss": 67485696
+        "footprint": 158122656,
+        "maxrss": 68812800
       },
       "14": {
-        "footprint": 156844680,
-        "maxrss": 67551232
+        "footprint": 158237320,
+        "maxrss": 68943872
       },
       "15": {
-        "footprint": 157123256,
-        "maxrss": 67796992
+        "footprint": 158237344,
+        "maxrss": 68927488
       },
       "16": {
-        "footprint": 157336224,
-        "maxrss": 68026368
+        "footprint": 158614176,
+        "maxrss": 69304320
       },
       "17": {
-        "footprint": 157614752,
-        "maxrss": 68304896
+        "footprint": 159056544,
+        "maxrss": 69746688
       },
       "18": {
-        "footprint": 158859936,
-        "maxrss": 69550080
+        "footprint": 160088712,
+        "maxrss": 70795264
       },
       "19": {
-        "footprint": 160973472,
-        "maxrss": 71663616
+        "footprint": 162284192,
+        "maxrss": 72974336
       },
       "20": {
-        "footprint": 165102240,
-        "maxrss": 75792384
+        "footprint": 166363808,
+        "maxrss": 77053952
       },
       "21": {
-        "footprint": 173572768,
-        "maxrss": 84262912
+        "footprint": 174883488,
+        "maxrss": 85573632
       },
       "22": {
-        "footprint": 190284448,
-        "maxrss": 100990976
+        "footprint": 191644320,
+        "maxrss": 102334464
       },
       "23": {
-        "footprint": 224379600,
-        "maxrss": 134823936
+        "footprint": 225493712,
+        "maxrss": 135938048
       },
       "24": {
-        "footprint": 291439384,
-        "maxrss": 201883648
+        "footprint": 292700928,
+        "maxrss": 203161600
       },
       "25": {
-        "footprint": 425739104,
-        "maxrss": 336084992
+        "footprint": 426885984,
+        "maxrss": 337231872
       },
       "26": {
-        "footprint": 694223880,
-        "maxrss": 604454912
+        "footprint": 695436296,
+        "maxrss": 605667328
       },
       "27": {
-        "footprint": 1231373728,
-        "maxrss": 1141374976
+        "footprint": 1232668040,
+        "maxrss": 1142685696
       },
       "28": {
-        "footprint": 2305755320,
-        "maxrss": 2215165952
+        "footprint": 2306869408,
+        "maxrss": 2216296448
       },
       "29": {
-        "footprint": 4454174344,
-        "maxrss": 4362567680
+        "footprint": 4455468680,
+        "maxrss": 4363862016
       },
       "30": {
-        "footprint": 8751274656,
-        "maxrss": 8657600512
+        "footprint": 8752650912,
+        "maxrss": 8658976768
       },
       "31": {
-        "footprint": 17345262264,
-        "maxrss": 17247322112
+        "footprint": 17346671288,
+        "maxrss": 17248731136
       },
       "32": {
-        "footprint": 34533565088,
-        "maxrss": 34427240448
+        "footprint": 34535350992,
+        "maxrss": 34428993536
       }
     }
   },
@@ -359,136 +367,140 @@
   "measured_dm": {
     "cpu": {
       "5": {
-        "footprint": 38716040,
-        "maxrss": 65519616
+        "footprint": 38929032,
+        "maxrss": 65732608
       },
       "6": {
-        "footprint": 38748784,
-        "maxrss": 65568768
+        "footprint": 39010928,
+        "maxrss": 65830912
       },
       "7": {
-        "footprint": 38814320,
-        "maxrss": 65634304
+        "footprint": 38797960,
+        "maxrss": 65601536
       },
       "8": {
-        "footprint": 39371424,
-        "maxrss": 66158592
+        "footprint": 39469704,
+        "maxrss": 66273280
       },
       "9": {
-        "footprint": 47252128,
-        "maxrss": 74039296
+        "footprint": 45302432,
+        "maxrss": 72089600
       },
       "10": {
-        "footprint": 63898248,
-        "maxrss": 90701824
+        "footprint": 68305568,
+        "maxrss": 95092736
       },
       "11": {
-        "footprint": 139592400,
-        "maxrss": 166346752
+        "footprint": 93553312,
+        "maxrss": 120340480
       },
       "12": {
-        "footprint": 441566120,
-        "maxrss": 468172800
+        "footprint": 261587736,
+        "maxrss": 288292864
       },
       "13": {
-        "footprint": 1650149104,
-        "maxrss": 1676181504
+        "footprint": 597165088,
+        "maxrss": 623689728
       },
       "14": {
-        "footprint": 6484415624,
-        "maxrss": 6508068864
+        "footprint": 2208532616,
+        "maxrss": 2234286080
       }
     },
     "mlx": {
       "5": {
-        "footprint": 160350904,
-        "maxrss": 70582272
+        "footprint": 159892128,
+        "maxrss": 69566464
       },
       "6": {
-        "footprint": 161202848,
-        "maxrss": 70778880
+        "footprint": 218956448,
+        "maxrss": 69615616
       },
       "7": {
-        "footprint": 163529352,
-        "maxrss": 70778880
+        "footprint": 161301128,
+        "maxrss": 69599232
       },
       "8": {
-        "footprint": 178471560,
-        "maxrss": 71532544
+        "footprint": 167150216,
+        "maxrss": 70074368
       },
       "9": {
-        "footprint": 239911608,
-        "maxrss": 75546624
+        "footprint": 252560056,
+        "maxrss": 74170368
       },
       "10": {
-        "footprint": 501285560,
-        "maxrss": 88227840
+        "footprint": 311116472,
+        "maxrss": 86556672
       },
       "11": {
-        "footprint": 1707950824,
-        "maxrss": 140181504
+        "footprint": 831455928,
+        "maxrss": 137052160
       },
       "12": {
-        "footprint": 4191470456,
-        "maxrss": 341688320
+        "footprint": 3039691616,
+        "maxrss": 339378176
       },
       "13": {
-        "footprint": 13318456760,
-        "maxrss": 1146929152
+        "footprint": 2845443488,
+        "maxrss": 1143668736
       },
       "14": {
-        "footprint": 52780093112,
-        "maxrss": 4368220160
+        "footprint": 10899967624,
+        "maxrss": 4364763136
+      },
+      "15": {
+        "footprint": 25993173688,
+        "maxrss": 17245601792
       }
     },
     "metal": {
       "5": {
-        "footprint": 158057120,
-        "maxrss": 68780032
+        "footprint": 158352032,
+        "maxrss": 68878336
       },
       "6": {
-        "footprint": 158024328,
-        "maxrss": 68747264
+        "footprint": 158483104,
+        "maxrss": 68993024
       },
       "7": {
-        "footprint": 158089864,
-        "maxrss": 68812800
+        "footprint": 158565000,
+        "maxrss": 69091328
       },
       "8": {
-        "footprint": 158630560,
-        "maxrss": 69337088
+        "footprint": 158990984,
+        "maxrss": 69517312
       },
       "9": {
-        "footprint": 160203424,
-        "maxrss": 70926336
+        "footprint": 160563896,
+        "maxrss": 71057408
       },
       "10": {
-        "footprint": 166347400,
-        "maxrss": 77103104
+        "footprint": 166724232,
+        "maxrss": 77250560
       },
       "11": {
-        "footprint": 191611576,
-        "maxrss": 102334464
+        "footprint": 191988408,
+        "maxrss": 102498304
       },
       "12": {
-        "footprint": 292700904,
-        "maxrss": 203210752
+        "footprint": 418841344,
+        "maxrss": 203522048
       },
       "13": {
-        "footprint": 695583776,
-        "maxrss": 605831168
+        "footprint": 695682056,
+        "maxrss": 605962240
       },
       "14": {
-        "footprint": 2306902176,
-        "maxrss": 2216394752
+        "footprint": 2306967712,
+        "maxrss": 2216460288
       },
       "15": {
-        "footprint": 8752585376,
-        "maxrss": 8658960384
+        "footprint": 8878840480,
+        "maxrss": 8659402752
       },
       "16": {
-        "footprint": 34535006904,
-        "maxrss": 34428731392
+        "footprint": 34534941368,
+        "maxrss": 34428682240
       }
     }
   }

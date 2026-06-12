@@ -30,6 +30,13 @@ All notable changes to this project are documented here, following
   and 15-qubit density matrices without swap, and every measured runtime cell
   improved (GHZ@24-28q 6.5-7.9x, QFT 2.1-2.6x, random 1.2-1.8x).
 
+- Refresh the large statevector and memory benchmark artifacts after the v0.3.x RAM
+  line: the MLX statevector series now extends to 30 qubits (previously skipped for
+  memory) and the density-matrix series to n=15; measured peak multipliers drop to
+  ~1.03x (CPU) and ~3-5x (MLX) of the state size. MLX remains capped at 30 qubits by
+  the upstream int32 `ShapeElem` limit (arrays of 2**31+ elements are not
+  representable); Metal covers 31-33q.
+
 ### Added
 
 - Add `TrajectorySimulator` (Step 37): Monte-Carlo wavefunction simulation of noisy
