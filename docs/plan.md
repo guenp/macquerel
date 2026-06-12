@@ -29,14 +29,14 @@ notes.
 
 - **Memory-mapped out-of-core backend** — state vector backed by an NVMe file via
   `np.memmap`, for single large runs past DRAM capacity. Investigated and expanded
-  into the explicit spill-to-disk design under [v0.3.x](#v03x-spill-to-disk-statevectors-duckdb-style-out-of-core-execution)
+  into the explicit out-of-core design under [v0.3.x](#v03x-out-of-core-statevectors-disk-streamed-past-ram-capacity)
   below — passive OS paging turned out to be the wrong mechanism.
 - **Multi-Mac over Thunderbolt** — distributed state vector using index-bit partitioning
   across machines.
 
 ---
 
-## v0.3.x — Spill-to-disk statevectors (DuckDB-style out-of-core execution)
+## v0.3.x — Out-of-core statevectors (disk-streamed past RAM capacity)
 
 [DuckDB](https://duckdb.org/2024/07/09/memory-management.html) runs analytical queries
 on larger-than-memory data by giving every operator a fixed memory budget
@@ -96,7 +96,7 @@ I/O. What *does* transfer from DuckDB is everything around the buffer pool:
 | 36 | 512 GiB | NVMe | ~150 s |
 | 37 | 1 TiB | NVMe (~1.6 TB free) | ~5 min |
 
-So spill-to-disk buys **+1 to +4 qubits** of capacity at a slowdown set by the
+So out-of-core execution buys **+1 to +4 qubits** of capacity at a slowdown set by the
 local/global structure of the circuit: GHZ at 34q is a handful of episodes (~minutes);
 a QFT, whose controlled-phase gates are diagonal (diagonal gates never touch a global
 bit's *pairing*, only its phase — they are chunk-local at any width), spills cheaply;
