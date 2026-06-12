@@ -8,6 +8,12 @@ The maintained benchmark suite focuses on three outputs:
   merges them into one chart and marks where Metal overtakes the best alternative.
 - `fusion_width.json/.png`: runtime vs `max_fused_qubits`.
 - `version_regression.json/.png`: released macquerel versions compared with the current checkout for CPU, MLX, and Metal.
+- `mcm.json/.png`: mid-circuit measurement on QEC-style repetition-code syndrome extraction —
+  runtime vs number of MCM rounds and vs qubit count, for both MCM semantics (`Simulator.run`
+  aggregate sampling and per-shot projective collapse via `backend.measure`), per backend.
+- `vqe.json/.png`: variational workloads — TFIM `<H>` evaluation time vs qubit count and vs
+  ansatz depth per backend, plus full parameter-shift gradients vs parameter count comparing a
+  per-circuit `Simulator` loop against `BatchedSimulator` (cpu/mlx).
 
 Regenerate the plots with:
 
@@ -34,6 +40,10 @@ uv run python benchmarks/bench_versions.py \
   --versions latest \
   --json benchmarks/data/version_regression.json \
   --plot benchmarks/data/version_regression.png
+
+# Mid-circuit measurement (QEC syndrome extraction) and VQE workloads:
+uv run python benchmarks/bench_mcm.py
+uv run python benchmarks/bench_vqe.py
 ```
 
 `bench_versions.py` is also used by CI on pull requests. The CI job runs a small CPU-only
