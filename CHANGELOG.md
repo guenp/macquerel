@@ -5,6 +5,8 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-12
+
 ### Changed
 
 - Apply narrow control-free density-matrix unitaries as a single
@@ -193,7 +195,8 @@ All notable changes to this project are documented here, following
 - Gate-fusion compiler and diagonal/permutation/dense gate classification.
 - Cirq and Qiskit import adapters (optional extras).
 
-[Unreleased]: https://github.com/guenp/macquerel/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/guenp/macquerel/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/guenp/macquerel/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/guenp/macquerel/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/guenp/macquerel/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/guenp/macquerel/compare/v0.1.1...v0.2.0
