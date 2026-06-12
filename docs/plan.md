@@ -161,6 +161,8 @@ single-machine A/B.
   roughly with √depth — fine for sampling and expectation values at moderate depth,
   not for amplitude-level verification. Ship opt-in only; gate with the existing
   differential tests against complex64 and publish a fidelity-vs-depth table.
+  **This is the cheapest +1 qubit of the v0.4 line** and depends only on
+  chunk-granular scaling, not on the disk pipeline — it can ship before Steps 41–44.
 
 Considered and deferred: **error-bounded lossy compression (SZ/ZFP)** — the
 strongest published precedent for compressed full-state simulation (Wu et al.,
@@ -171,15 +173,68 @@ Grover), but a poor fit here for now: SZ/ZFP throughput is ~1-5 GB/s per CPU cor
 (below the NVMe without multithreading or a Metal port — ZFP has CUDA kernels, no
 Metal), the error bound is consumed once per compress/decompress cycle and every
 chunk episode is a cycle, and the ratio evaporates on Haar-random states — exactly
-the circuits that need spilling most. Also deferred: **changed representations**
-(matrix product states, decision diagrams, sparse amplitude dictionaries) — these
-compress *structure* rather than bytes (MPS memory scales with bond dimension, not
-2ⁿ) and are the biggest capacity lever of all, but they are a different simulator,
-deserving their own roadmap line rather than a codec bullet under spill-to-disk;
+the circuits that need spilling most. Also deferred: **an in-RAM "blocked backend"
+as its own feature** — partitioning never reduces the bytes a state occupies, and
+Metal already stores the state once at a measured ~1.0x of theory, so in-RAM block
+partitioning adds zero qubits on this machine; it falls out of Step 41 anyway as
+the trivial budget ≥ state bypass. (A gate on a global bit is a 2×2 *block matrix
+multiply* over chunk pairs at identical traffic to a local pass, so the in-RAM
+partitioning tax is ~zero — but so is the benefit.) One conditional exception: an
+**`mlx-chunked` mode** (chunks ≤ 2³⁰ elements) would lift MLX's upstream int32
+`ShapeElem` ceiling from 30q to Metal parity at 33q while collapsing its ~3-5×
+peak multiplier toward ~1× (lazy-graph temporaries become chunk-sized) — same
+scheduler, RAM tier; only worth building if MLX-only machines (no PyObjC) turn out
+to matter. Also deferred: **changed representations** — matrix product states now
+have their own roadmap line ([v0.5](#v05-matrix-product-state-simulator) below);
+decision diagrams and sparse amplitude dictionaries remain deferred without one —
 and a **general buffer pool with LRU eviction** (no selectivity in the access
 pattern — the streaming three-buffer pipeline is the whole pool). The multi-Mac
 item (v0.3) and this section share the index-bit partitioning compiler work;
 whichever ships first pays most of the cost of the second.
+
+---
+
+## v0.5 — Matrix product state simulator
+
+Everything in v0.4 buys single qubits at the 2ⁿ byte wall (complex32 +1, spilling
++1 to +4). A **changed representation** is the only lever that escapes it: an
+`MPSSimulator` stores the state as a chain of n tensors of shape `(χ, 2, χ)`, where
+the bond dimension χ measures entanglement across each cut — memory is
+`n · 2χ² · 8 B`, scaling with *entanglement* instead of 2ⁿ. 100 qubits at χ = 1024
+is 1.6 GiB; a GHZ state is χ = 2 at any width; MPS storage beats the full vector at
+33q for any χ below ~10⁴. The honest trade: each entangling layer can double χ, so a
+deep random circuit forces χ → 2^(n/2) and the representation collapses back to 2ⁿ —
+this is a new regime (50–1000+ low-entanglement qubits: GHZ/Clifford-lite states,
+QFT, shallow VQE/QAOA ansätze, 1D Trotterized time evolution), not a replacement for
+the statevector simulator.
+
+Design constraints, from a back-of-envelope study on this machine:
+
+- **Sibling-simulator pattern.** Same `Circuit` API, alongside
+  `DensityMatrixSimulator` and `TrajectorySimulator`. χ capped with **exact tracked
+  truncation fidelity** (computed from the discarded singular values, reported per
+  run), nearest-neighbor routing via SWAP chains, exact `O(n χ²)`-per-shot sampling
+  by sweeping the chain.
+- **Gate costs.** 1-qubit gates are free contractions. A 2-qubit neighbor gate
+  contracts two site tensors (~χ³ GEMM), applies the gate, then SVDs the `2χ × 2χ`
+  matrix to split back and truncate — `O(8χ³)`, the dominant cost and the one new
+  primitive.
+- **CPU/GPU split.** The χ³ contractions are GEMMs — exactly what the existing
+  Metal/MLX backends are best at, on far friendlier tensor shapes than 2ⁿ vectors.
+  But **SVD has no GPU path on Apple Silicon today**: MLX's `mx.linalg.svd` is
+  CPU-stream-only (verified on 0.31.2) and Metal Performance Shaders has no SVD, so
+  truncation runs on Accelerate LAPACK (~0.1–0.5 s at χ = 1024). Unified memory
+  makes the GPU-GEMM/CPU-SVD hybrid copy-free — the spot where discrete-GPU
+  simulators pay PCIe tax. QR-based or randomized-SVD truncation is the later GPU
+  offload path.
+- **A/B references.** Qiskit Aer `method="matrix_product_state"`, quimb, ITensor,
+  TeNPy. Document the `random` benchmark as the adversarial case MPS is *not* for.
+
+Considered and deferred: **contraction-based simulation** (qsimh / cuTensorNet /
+cotengra style — the whole circuit as one tensor network, contracted per amplitude
+batch with slicing). It is a sampling/amplitude tool with no state, no cheap
+mid-circuit measurement, and a contraction-order search problem that mature dedicated
+tools already own — a different product than this simulator's contract.
 
 ---
 
