@@ -1,9 +1,12 @@
-# GPU-perf plan: per-step benchmark data (docs/plan.md Steps 21–30 and 31–35)
+# GPU-perf plan: per-step benchmark data (docs/plan.md Steps 21–39)
 
 One JSON per `(step, backend)` written by `benchmarks/run_step_bench.sh`, named
-`<step>-<commit>-<backend>.json`. Each step was benchmarked in an isolated git
-worktree pinned to the commit it names; a step only re-measures the backends it
-touched (untouched backends carry forward). `benchmarks/plot_steps.py` renders:
+`<step>-<commit>-<backend>.json`. Each step is benchmarked through the ASV
+harness (`benchmarks/asv_benchmarks/`): `asv run` builds the step's commit in
+an isolated clone, times each cell in its own process, and the results are
+exported into these JSONs via `plot_steps.py --export-asv`. A step only
+re-measures the backends it touched (untouched backends carry forward).
+`benchmarks/plot_steps.py` renders:
 
 - `step_speedups.png` — cumulative geomean speedup vs baseline per step (left)
   and the final state's speedup by qubit count (right);
@@ -13,8 +16,21 @@ Steps appear in **execution order**: 21 → 22 → 24 → 23 → 25 → 26 → 2
 (24 was moved before 23 after review, so the memory-cliff fix wouldn't confound
 23's large-n A/B; 30 landed after the line shipped), then the v0.2.x+ candidate
 line re-baselined at the 0.2.1 release commit (`step32-baseline`, a no-change
-control vs step30: 0.99–1.00×) and ran 32 → 33 → 34. All numbers: M5 Max,
-128 GB, macOS, MLX 0.31.2, min of 3 reps, subprocess-isolated cells.
+control vs step30: 0.99–1.00×) and ran 32 → 33 → 34. Two later single-backend
+steps re-baselined again and extend the line: **36** (MLX monomial kernel,
+`step36-baseline`/`0c4c9dc` → `step36`/`3decb13`) and **39** (CPU in-place
+chunked apply, `step39-baseline`/`4bf3627` → `step39`/`bb230f0`). Their
+re-baselines reproduce the carried-forward step34 state within ~2%, so the
+global-baseline comparison holds across sessions. Steps 37/38 (trajectory noise,
+`expectation_pauli`) and 40 (density-matrix superoperator) are not statevector
+speedups and are excluded from these charts. All numbers: M5 Max, 128 GB, macOS,
+MLX 0.31.2, min of 3 reps, process-isolated cells.
+
+The JSONs and charts were re-measured in June 2026 by replaying every plotted
+step through the ASV harness; the per-step prose below quotes the original
+runs. Step-over-step ratios reproduced within a few percent; the compounded
+final cumulative landed at metal 2.44× / mlx 3.15× / cpu 1.68× (mlx after
+step36, cpu after step39; originally — through step34 — 2.85× / 2.04× / 1.63×).
 
 ## Per-step results and why
 

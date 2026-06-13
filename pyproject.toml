@@ -33,6 +33,7 @@ aer = ["qiskit>=1.0", "qiskit-aer>=0.14"]
 qulacs = ["qulacs>=0.6; python_version < '3.14'"]
 viz = ["matplotlib>=3.7"]
 bench = [
+    "asv>=0.6",
     "matplotlib>=3.7",
     "qiskit>=1.0",
     "qiskit-aer>=0.14",
@@ -89,6 +90,9 @@ known-first-party = ["macquerel"]
 # bench_statevector.py uses compact one-line `if name == ...: call()` dispatch
 # tables (E701) for the per-framework gate adapters.
 "benchmarks/**" = ["E501", "E701", "E731", "F841", "RUF001"]
+# ASV benchmark classes use the framework's idioms: mutable class attrs for
+# `params` (RUF012) and project-import-after-sys.path-setup ordering (I001).
+"benchmarks/asv_benchmarks/**" = ["I001", "RUF012"]
 "tests/benchmarks/**" = ["E501", "E731", "F841", "RUF001"]
 
 # ---- Type checking: ty (Astral's type checker) ----

@@ -27,6 +27,9 @@ env/
 .python-version
 .uv-cache/
 
+# ASV local environments/results
+.asv/
+
 # pytest / coverage
 .cache/
 .pytest_cache/
