@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run the per-step benchmark for the GPU-perf plan (docs/plan.md Steps 21-30)
+# Run the per-step benchmark for the GPU-perf plan (docs/plan.md Steps 21-39)
 # through the ASV harness (benchmarks/asv_benchmarks/).
 #
 # Usage: run_step_bench.sh <step-label> <commit> <backend> [<backend> ...]

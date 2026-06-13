@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot per-step speedups for the GPU-perf plan (docs/plan.md Steps 21-30).
+"""Plot per-step speedups for the GPU-perf plan (docs/plan.md Steps 21-39).
 
 Reads the per-step JSONs written by run_step_bench.sh into benchmarks/data/steps/
 (named ``<step>-<commit>-<backend>.json``) and produces:
@@ -32,9 +32,12 @@ from pathlib import Path
 
 # Execution order of the plan (docs/plan.md): step 24 lands before step 23;
 # the v0.2.x+ candidate line (steps 32-34) re-baselined at the 0.2.1 release
-# commit ("step32-baseline") and runs 32 -> 33 -> 34. Steps 31/35 are not here:
-# 31 (BatchedSimulator) has its own harness (bench_batched.py) and 35 is
-# routing-only, which this benchmark pins away.
+# commit ("step32-baseline") and runs 32 -> 33 -> 34. Steps 36 (MLX) and 39
+# (CPU) each re-baselined again ("step36-baseline" / "step39-baseline") and
+# touch a single backend; the untouched backends carry forward. Steps not here:
+# 31 (BatchedSimulator, own harness bench_batched.py), 35 (routing-only, pinned
+# away), 37/38 (trajectory noise & expectation_pauli, not statevector), and 40
+# (density-matrix superoperator, a different metric/units).
 STEP_ORDER = [
     "step20-baseline",
     "step21",
@@ -50,6 +53,10 @@ STEP_ORDER = [
     "step32",
     "step33",
     "step34",
+    "step36-baseline",
+    "step36",
+    "step39-baseline",
+    "step39",
 ]
 
 BACKENDS = ["macquerel-cpu", "macquerel-mlx", "macquerel-metal"]
@@ -128,7 +135,7 @@ def make_speedup_plot(steps, timeline, baseline, commits, out_path):
     import matplotlib.pyplot as plt
     import numpy as np
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 6))
 
     # Left: cumulative geomean speedup vs baseline per backend, per step.
     plot_steps_ = steps[1:] if steps and steps[0] == baseline else steps
@@ -162,7 +169,13 @@ def make_speedup_plot(steps, timeline, baseline, commits, out_path):
                 )
     ax1.axhline(1.0, color="gray", linewidth=0.8, linestyle="--")
     ax1.set_xticks(xs)
-    ax1.set_xticklabels([f"{s}\n({commits.get(s, '?')})" for s in plot_steps_], fontsize=8)
+    ax1.set_xticklabels(
+        [f"{s}\n({commits.get(s, '?')})" for s in plot_steps_],
+        fontsize=7,
+        rotation=45,
+        ha="right",
+        rotation_mode="anchor",
+    )
     ax1.set_ylabel("cumulative speedup vs baseline (geomean, higher = better)")
     ax1.set_title("Speedup vs baseline after each step")
     ax1.legend(fontsize=8)
